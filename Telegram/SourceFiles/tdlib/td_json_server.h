@@ -18,11 +18,11 @@ namespace TdBridge {
 // Unix socket server exposing a line-delimited JSON protocol.
 //
 // Each request line is a JSON object with a "type" field:
-//   {"type":"tdlib", ...}      — forwarded to TDLib (tdjson API)
-//   {"type":"tdesktop", ...}   — tdesktop-specific control commands
+//   {"type":"tdlib", "payload":{...}}    — forwarded to TDLib (tdjson API)
+//   {"type":"tdesktop", ...}             — tdesktop-specific control commands
 //
 // Responses are JSON objects with the same "type" prefix.
-// TDLib responses/updates carry "type":"tdlib".
+// TDLib responses/updates carry "type":"tdlib" with TDLib JSON in "payload".
 // Control responses carry "type":"tdesktop".
 class ControlServer final : public QObject {
 	Q_OBJECT
@@ -41,7 +41,7 @@ private:
 	void onClientDisconnected(QLocalSocket *socket);
 	void pollTdLib();
 	void processLine(QLocalSocket *socket, const QByteArray &line);
-	void handleTdLibRequest(QLocalSocket *socket, const QJsonObject &obj);
+	void handleTdLibRequest(QLocalSocket *socket, const QJsonObject &payload);
 	void handleControlRequest(QLocalSocket *socket, const QJsonObject &obj);
 	void sendJson(QLocalSocket *socket, const QJsonObject &obj);
 

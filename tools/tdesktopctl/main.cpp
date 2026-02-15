@@ -4,12 +4,12 @@
 // exchanges line-delimited JSON messages.
 //
 // Protocol:
-//   {"type":"tdlib", "@type":"getMe", "@extra":"1"}   — TDLib request
-//   {"type":"tdesktop", "command":"ping"}              — control command
+//   {"type":"tdlib", "payload":{"@type":"getMe", "@extra":"1"}}  — TDLib request
+//   {"type":"tdesktop", "command":"ping"}                         — control command
 //
 // Usage:
 //   tdesktopctl                              — interactive mode
-//   tdesktopctl --exec '{"type":"tdlib","@type":"getMe"}'  — one-shot
+//   tdesktopctl --exec '{"type":"tdlib","payload":{"@type":"getMe"}}'  — one-shot
 //   tdesktopctl --socket /path/to/tdesktop.sock            — custom path
 //   echo '...' | tdesktopctl                 — pipe mode
 

@@ -109,7 +109,7 @@ void ControlServer::processLine(
 	const auto type = obj.value("type").toString();
 
 	if (type == u"tdlib"_q) {
-		handleTdLibRequest(socket, obj);
+		handleTdLibRequest(socket, obj.value("payload").toObject());
 	} else if (type == u"tdesktop"_q) {
 		handleControlRequest(socket, obj);
 	} else {
@@ -125,15 +125,11 @@ void ControlServer::processLine(
 
 void ControlServer::handleTdLibRequest(
 		QLocalSocket *socket,
-		const QJsonObject &obj) {
+		const QJsonObject &payload) {
 	auto it = _clients.find(socket);
 	if (it == _clients.end()) {
 		return;
 	}
-
-	// Extract the TDLib payload (everything except "type").
-	auto payload = obj;
-	payload.remove("type");
 
 	const auto json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 	td_send(it->second.tdlibClientId, json.constData());
@@ -216,11 +212,13 @@ void ControlServer::pollTdLib() {
 
 		auto *socket = it->second;
 
-		// Remove @client_id, wrap with "type":"tdlib".
+		// Remove @client_id, wrap in envelope with "type":"tdlib".
 		obj.remove("@client_id");
-		obj["type"] = "tdlib";
 
-		sendJson(socket, obj);
+		sendJson(socket, QJsonObject{
+			{ "type", "tdlib" },
+			{ "payload", obj },
+		});
 	}
 }
 
