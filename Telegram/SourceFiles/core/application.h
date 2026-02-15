@@ -44,6 +44,11 @@ class Account;
 class Session;
 } // namespace Main
 
+namespace TdBridge {
+class TdLibBridge;
+class ControlServer;
+} // namespace TdBridge
+
 namespace Iv {
 class Instance;
 class DelegateImpl;
@@ -470,6 +475,9 @@ private:
 	rpl::lifetime _lifetime;
 
 	crl::time _lastNonIdleTime = 0;
+
+	std::unique_ptr<TdBridge::TdLibBridge> _tdlibBridge;
+	std::unique_ptr<TdBridge::ControlServer> _controlServer;
 
 };
 

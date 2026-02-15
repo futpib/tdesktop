@@ -89,8 +89,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/accessible/ui_accessible_factory.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/controls/location_picker.h"
+#include "tdlib/tdlib_bridge.h"
+#include "tdlib/td_json_server.h"
 #include "styles/style_window.h"
 
+#include <td/telegram/Client.h>
+
+#include <QtCore/QDir>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QMimeDatabase>
 #include <QtGui/QGuiApplication>
@@ -98,6 +103,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtGui/QWindow>
 
 #include <ksandbox.h>
+
+#include <unistd.h>
 
 namespace Core {
 namespace {
@@ -378,6 +385,49 @@ void Application::run() {
 	DEBUG_LOG(("Application Info: window created..."));
 
 	startDomain();
+
+	// Initialize TDLib bridge: routes TDLib's network queries through
+	// tdesktop's MTP::Instance.
+	_tdlibBridge = std::make_unique<TdBridge::TdLibBridge>();
+	td::ClientManager::set_external_dispatch(
+		[bridge = _tdlibBridge.get()](td::NetQueryPtr query) {
+			bridge->onExternalDispatch(std::move(query));
+		});
+
+	// Connect to the active account's MTP instance.
+	_domain->activeValue(
+	) | rpl::map([](Main::Account *account) {
+		return account ? account->mtpValue() : rpl::never<not_null<MTP::Instance*>>();
+	}) | rpl::flatten_latest(
+	) | rpl::on_next([this](not_null<MTP::Instance*> instance) {
+		_tdlibBridge->setMtpInstance(instance);
+	}, _lifetime);
+
+	// Start the control socket server (TDLib + tdesktop commands).
+	// Place socket in $XDG_RUNTIME_DIR per XDG Base Directory spec.
+	// If XDG_RUNTIME_DIR is not set, fall back to /tmp with a
+	// user-specific directory (0700 permissions) and warn.
+	auto runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
+	if (runtimeDir.isEmpty()) {
+		LOG(("Control Server WARNING: XDG_RUNTIME_DIR is not set. "
+			"Falling back to a replacement directory in /tmp."));
+		runtimeDir = u"/tmp/tdesktop-%1"_q
+			.arg(uint(getuid()));
+		QDir().mkpath(runtimeDir);
+		QFile::setPermissions(
+			runtimeDir,
+			QFileDevice::ReadOwner
+				| QFileDevice::WriteOwner
+				| QFileDevice::ExeOwner);
+	}
+	const auto socketPath = runtimeDir + u"/tdesktop.sock"_q;
+	_controlServer = std::make_unique<TdBridge::ControlServer>(socketPath);
+	if (!_controlServer->start()) {
+		LOG(("Control Server: Failed to start on %1").arg(socketPath));
+	} else {
+		LOG(("Control Server: Listening on %1").arg(socketPath));
+	}
+
 	startTray();
 
 	_lastActivePrimaryWindow->firstShow();

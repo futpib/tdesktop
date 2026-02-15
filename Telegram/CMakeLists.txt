@@ -34,6 +34,7 @@ include(cmake/td_lang.cmake)
 include(cmake/td_mtproto.cmake)
 include(cmake/td_scheme.cmake)
 include(cmake/td_tde2e.cmake)
+include(cmake/td_tdlib_bridge.cmake)
 include(cmake/td_ui.cmake)
 include(cmake/generate_appstream_changelog.cmake)
 
@@ -68,6 +69,7 @@ PRIVATE
     tdesktop::td_mtproto
     tdesktop::td_scheme
     tdesktop::td_tde2e
+    tdesktop::td_tdlib_bridge
     tdesktop::td_ui
     desktop-app::lib_webrtc
     desktop-app::lib_base

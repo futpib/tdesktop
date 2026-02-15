@@ -53,4 +53,16 @@ set(desktop_app_skip_libs
 )
 
 add_subdirectory(cmake)
+
+# TDLib - used by the TDLib bridge to expose tdjson API over Unix socket.
+set(TD_SOURCE_DIR "" CACHE PATH "Path to TDLib source directory")
+if (TD_SOURCE_DIR)
+    add_subdirectory(${TD_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/td)
+else()
+    # Try the default sibling directory.
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../td/CMakeLists.txt")
+        add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../td ${CMAKE_CURRENT_BINARY_DIR}/td)
+    endif()
+endif()
+
 add_subdirectory(Telegram)
