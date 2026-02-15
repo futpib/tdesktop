@@ -93,7 +93,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "tdlib/td_json_server.h"
 #include "styles/style_window.h"
 
-#include <td/telegram/Client.h>
 #include <td/telegram/td_json_client.h>
 
 #include <QtCore/QDir>
@@ -392,10 +391,7 @@ void Application::run() {
 	// Initialize TDLib bridge: routes TDLib's network queries through
 	// tdesktop's MTP::Instance.
 	_tdlibBridge = std::make_unique<TdBridge::TdLibBridge>();
-	td::ClientManager::set_external_dispatch(
-		[bridge = _tdlibBridge.get()](td::NetQueryPtr query) {
-			bridge->onExternalDispatch(std::move(query));
-		});
+	_tdlibBridge->registerExternalDispatch();
 
 	// Connect to the active account's MTP instance.
 	_domain->activeValue(

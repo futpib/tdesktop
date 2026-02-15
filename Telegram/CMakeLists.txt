@@ -34,7 +34,6 @@ include(cmake/td_lang.cmake)
 include(cmake/td_mtproto.cmake)
 include(cmake/td_scheme.cmake)
 include(cmake/td_tde2e.cmake)
-include(cmake/td_tdlib_bridge.cmake)
 include(cmake/td_ui.cmake)
 include(cmake/generate_appstream_changelog.cmake)
 
@@ -69,7 +68,8 @@ PRIVATE
     tdesktop::td_mtproto
     tdesktop::td_scheme
     tdesktop::td_tde2e
-    tdesktop::td_tdlib_bridge
+    tdjson_static
+    tdclient
     tdesktop::td_ui
     desktop-app::lib_webrtc
     desktop-app::lib_base
@@ -1814,6 +1814,10 @@ PRIVATE
     settings.cpp
     settings.h
     stdafx.h
+    tdlib/tdlib_bridge.cpp
+    tdlib/tdlib_bridge.h
+    tdlib/td_json_server.cpp
+    tdlib/td_json_server.h
     tray.cpp
     tray.h
 )
@@ -2031,6 +2035,23 @@ target_sources(Telegram PRIVATE ${entitlement_sources})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/Telegram PREFIX Resources FILES ${entitlement_sources})
 
 target_include_directories(Telegram PRIVATE ${src_loc})
+
+set(td_root ${third_party_loc}/td)
+set(td_include_dirs
+    ${td_root}/td/generate/auto
+    ${td_root}/tdutils
+    ${td_root}/tdactor
+    ${td_root}/tdnet
+    ${td_root}/tddb
+    ${td_root}
+    ${CMAKE_BINARY_DIR}/Telegram/ThirdParty/td/tdutils
+)
+list(TRANSFORM td_include_dirs PREPEND "-I")
+set_source_files_properties(
+    ${src_loc}/tdlib/tdlib_bridge.cpp
+    ${src_loc}/tdlib/td_json_server.cpp
+    PROPERTIES COMPILE_OPTIONS "${td_include_dirs}"
+)
 
 target_compile_definitions(Telegram
 PRIVATE

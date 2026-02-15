@@ -7,14 +7,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "tdlib/tdlib_bridge.h"
 
+#include "mtproto/mtp_instance.h"
+#include "mtproto/core_types.h"
 #include "mtproto/details/mtproto_serialized_request.h"
 #include "mtproto/mtproto_response.h"
-#include "mtproto/core_types.h"
 
+#include <td/telegram/ClientInternal.h>
+#include <td/telegram/Client.h>
 #include <td/telegram/net/NetQuery.h>
 #include <td/telegram/net/NetQueryDispatcher.h>
 
 #include <QtCore/QMetaObject>
+
+#include <mutex>
 
 namespace TdBridge {
 namespace {
@@ -104,48 +109,72 @@ constexpr uint32 kGzipPackedConstructor = 0x3072cfa1;
 
 } // namespace
 
-TdLibBridge::TdLibBridge() {
+struct TdLibBridge::Private {
+	MTP::Instance *mtp = nullptr;
+	std::mutex mutex;
+	struct PendingQuery {
+		td::NetQueryPtr query;
+		int32 rawDcId = 0;
+		td::NetQuery::Type type = td::NetQuery::Type::Common;
+	};
+	std::vector<PendingQuery> pendingBeforeMtp;
+	uint64 nextBridgeId = 1;
+	base::flat_map<mtpRequestId, td::NetQueryPtr> sentQueries;
+
+	void sendToMtp(TdLibBridge *bridge, PendingQuery &&pending);
+	void completeQuery(td::NetQueryPtr query);
+	[[nodiscard]] MTP::ShiftedDcId mapDcId(
+		int32 rawDcId,
+		td::NetQuery::Type type) const;
+};
+
+TdLibBridge::TdLibBridge()
+: _d(std::make_unique<Private>()) {
 }
 
 TdLibBridge::~TdLibBridge() = default;
 
 void TdLibBridge::setMtpInstance(not_null<MTP::Instance*> instance) {
-	std::lock_guard<std::mutex> lock(_mutex);
-	_mtp = instance;
+	std::lock_guard<std::mutex> lock(_d->mutex);
+	_d->mtp = instance;
 
 	// Flush any queries that arrived before MTP was ready.
-	auto pending = std::move(_pendingBeforeMtp);
-	_pendingBeforeMtp.clear();
+	auto pending = std::move(_d->pendingBeforeMtp);
+	_d->pendingBeforeMtp.clear();
 
 	for (auto &p : pending) {
-		sendToMtp(std::move(p));
+		_d->sendToMtp(this, std::move(p));
 	}
 }
 
-void TdLibBridge::onExternalDispatch(td::NetQueryPtr query) {
-	// Called from TDLib's scheduler thread.
-	// Extract what we need, then marshal to Qt main thread.
-	const auto rawDcId = query->dc_id().is_main()
-		? 0
-		: query->dc_id().get_raw_id();
-	const auto type = query->type();
+void TdLibBridge::registerExternalDispatch() {
+	td::set_external_dispatch(
+		[this](td::NetQueryPtr query) {
+			// Called from TDLib's scheduler thread.
+			const auto rawDcId = query->dc_id().is_main()
+				? 0
+				: query->dc_id().get_raw_id();
+			const auto type = query->type();
 
-	PendingQuery pending;
-	pending.query = std::move(query);
-	pending.rawDcId = rawDcId;
-	pending.type = type;
+			Private::PendingQuery pending;
+			pending.query = std::move(query);
+			pending.rawDcId = rawDcId;
+			pending.type = type;
 
-	QMetaObject::invokeMethod(this, [this, p = std::move(pending)]() mutable {
-		std::lock_guard<std::mutex> lock(_mutex);
-		if (!_mtp) {
-			_pendingBeforeMtp.push_back(std::move(p));
-			return;
-		}
-		sendToMtp(std::move(p));
-	}, Qt::QueuedConnection);
+			QMetaObject::invokeMethod(this, [this, p = std::move(pending)]() mutable {
+				std::lock_guard<std::mutex> lock(_d->mutex);
+				if (!_d->mtp) {
+					_d->pendingBeforeMtp.push_back(std::move(p));
+					return;
+				}
+				_d->sendToMtp(this, std::move(p));
+			}, Qt::QueuedConnection);
+		});
 }
 
-void TdLibBridge::sendToMtp(PendingQuery &&pending) {
+void TdLibBridge::Private::sendToMtp(
+		TdLibBridge *bridge,
+		PendingQuery &&pending) {
 	auto &query = pending.query;
 	const auto shiftedDcId = mapDcId(pending.rawDcId, pending.type);
 
@@ -157,18 +186,17 @@ void TdLibBridge::sendToMtp(PendingQuery &&pending) {
 	serialized->requestId = requestId;
 
 	// Store the TDLib query so we can complete it when the response arrives.
-	_sentQueries.emplace(requestId, std::move(query));
+	sentQueries.emplace(requestId, std::move(query));
 
 	auto done = [this, requestId](const MTP::Response &response) -> bool {
-		auto it = _sentQueries.find(requestId);
-		if (it == _sentQueries.end()) {
+		auto it = sentQueries.find(requestId);
+		if (it == sentQueries.end()) {
 			return true;
 		}
 		auto query = std::move(it->second);
-		_sentQueries.erase(it);
+		sentQueries.erase(it);
 
 		// Convert the MTP response buffer to a td::BufferSlice.
-		// The reply buffer starts at position 0 and is the raw TL response.
 		const auto &reply = response.reply;
 		if (!reply.isEmpty()) {
 			const auto *data = reinterpret_cast<const char *>(
@@ -187,12 +215,12 @@ void TdLibBridge::sendToMtp(PendingQuery &&pending) {
 	auto fail = [this, requestId](
 			const MTP::Error &error,
 			const MTP::Response &response) -> bool {
-		auto it = _sentQueries.find(requestId);
-		if (it == _sentQueries.end()) {
+		auto it = sentQueries.find(requestId);
+		if (it == sentQueries.end()) {
 			return true;
 		}
 		auto query = std::move(it->second);
-		_sentQueries.erase(it);
+		sentQueries.erase(it);
 
 		const auto code = error.code();
 		const auto message = error.type().toStdString();
@@ -202,7 +230,7 @@ void TdLibBridge::sendToMtp(PendingQuery &&pending) {
 		return true;
 	};
 
-	_mtp->sendSerialized(
+	mtp->sendSerialized(
 		requestId,
 		std::move(serialized),
 		MTP::ResponseHandler{ std::move(done), std::move(fail) },
@@ -211,22 +239,22 @@ void TdLibBridge::sendToMtp(PendingQuery &&pending) {
 		0); // afterRequestId
 }
 
-void TdLibBridge::completeQuery(td::NetQueryPtr query) {
+void TdLibBridge::Private::completeQuery(td::NetQueryPtr query) {
 	td::NetQueryDispatcher::complete_net_query(std::move(query));
 }
 
-MTP::ShiftedDcId TdLibBridge::mapDcId(
+MTP::ShiftedDcId TdLibBridge::Private::mapDcId(
 		int32 rawDcId,
 		td::NetQuery::Type type) const {
 	if (rawDcId == 0) {
 		// Main DC - use ShiftedDcId 0 which means "current main DC".
 		switch (type) {
 		case td::NetQuery::Type::Upload:
-			return MTP::ShiftDcId(_mtp->mainDcId(), MTP::kBaseUploadDcShift);
+			return MTP::ShiftDcId(mtp->mainDcId(), MTP::kBaseUploadDcShift);
 		case td::NetQuery::Type::Download:
 		case td::NetQuery::Type::DownloadSmall:
 			return MTP::ShiftDcId(
-				_mtp->mainDcId(),
+				mtp->mainDcId(),
 				MTP::kBaseDownloadDcShift);
 		default:
 			return 0; // Main DC, no shift.

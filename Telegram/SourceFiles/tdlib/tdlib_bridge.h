@@ -7,16 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/mtp_instance.h"
-#include "mtproto/core_types.h"
-
-#include <td/telegram/Client.h>
-#include <td/telegram/net/NetQuery.h>
-#include <td/telegram/net/NetQueryDispatcher.h>
-
 #include <QtCore/QObject>
 
-#include <mutex>
+#include <memory>
+
+namespace MTP {
+class Instance;
+} // namespace MTP
 
 namespace TdBridge {
 
@@ -29,28 +26,12 @@ public:
 
 	void setMtpInstance(not_null<MTP::Instance*> instance);
 
-	// Called from TDLib's scheduler thread.
-	void onExternalDispatch(td::NetQueryPtr query);
+	// Registers this bridge as the TDLib external dispatch handler.
+	void registerExternalDispatch();
 
 private:
-	struct PendingQuery {
-		td::NetQueryPtr query;
-		int32 rawDcId = 0;
-		td::NetQuery::Type type = td::NetQuery::Type::Common;
-	};
-
-	void sendToMtp(PendingQuery &&pending);
-	void completeQuery(td::NetQueryPtr query);
-
-	[[nodiscard]] MTP::ShiftedDcId mapDcId(
-		int32 rawDcId,
-		td::NetQuery::Type type) const;
-
-	MTP::Instance *_mtp = nullptr;
-	std::mutex _mutex;
-	std::vector<PendingQuery> _pendingBeforeMtp;
-	uint64 _nextBridgeId = 1;
-	base::flat_map<mtpRequestId, td::NetQueryPtr> _sentQueries;
+	struct Private;
+	const std::unique_ptr<Private> _d;
 };
 
 } // namespace TdBridge

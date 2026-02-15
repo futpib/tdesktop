@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "tdlib/td_json_server.h"
 
+#include "base/basic_types.h"
+
 #include <td/telegram/td_json_client.h>
 
 #include <QtCore/QFile>
