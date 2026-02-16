@@ -50,19 +50,29 @@ void ControlServer::stop() {
 		socket->disconnectFromServer();
 	}
 	_clients.clear();
-	_tdlibClientIdToSocket.clear();
+	_accountToClientId.clear();
+	_clientIdToAccount.clear();
 	_server.close();
 
 	QFile::remove(_socketPath);
 }
 
+void ControlServer::addAccountClient(int accountIndex, int tdlibClientId) {
+	_accountToClientId[accountIndex] = tdlibClientId;
+	_clientIdToAccount[tdlibClientId] = accountIndex;
+}
+
+void ControlServer::removeAccountClient(int accountIndex) {
+	auto it = _accountToClientId.find(accountIndex);
+	if (it != _accountToClientId.end()) {
+		_clientIdToAccount.erase(it->second);
+		_accountToClientId.erase(it);
+	}
+}
+
 void ControlServer::onNewConnection() {
 	while (auto *socket = _server.nextPendingConnection()) {
-		const auto clientId = td_create_client_id();
-
-		auto &info = _clients[socket];
-		info.tdlibClientId = clientId;
-		_tdlibClientIdToSocket[clientId] = socket;
+		_clients[socket];  // create empty SocketInfo
 
 		connect(socket, &QLocalSocket::readyRead,
 			this, [this, socket] { onClientReadyRead(socket); });
@@ -111,7 +121,7 @@ void ControlServer::processLine(
 	const auto type = obj.value("type").toString();
 
 	if (type == u"tdlib"_q) {
-		handleTdLibRequest(socket, obj.value("payload").toObject());
+		handleTdLibRequest(socket, obj);
 	} else if (type == u"tdesktop"_q) {
 		handleControlRequest(socket, obj.value("payload").toObject());
 	} else {
@@ -127,14 +137,24 @@ void ControlServer::processLine(
 
 void ControlServer::handleTdLibRequest(
 		QLocalSocket *socket,
-		const QJsonObject &payload) {
-	auto it = _clients.find(socket);
-	if (it == _clients.end()) {
+		const QJsonObject &obj) {
+	const auto accountIndex = obj.value("account").toInt(0);
+	const auto payload = obj.value("payload").toObject();
+
+	auto it = _accountToClientId.find(accountIndex);
+	if (it == _accountToClientId.end()) {
+		sendJson(socket, QJsonObject{
+			{ "type", "error" },
+			{ "account", accountIndex },
+			{ "code", 404 },
+			{ "message",
+				u"No TDLib client for account %1"_q.arg(accountIndex) },
+		});
 		return;
 	}
 
 	const auto json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-	td_send(it->second.tdlibClientId, json.constData());
+	td_send(it->second, json.constData());
 }
 
 void ControlServer::handleControlRequest(
@@ -179,19 +199,7 @@ void ControlServer::sendJson(
 }
 
 void ControlServer::onClientDisconnected(QLocalSocket *socket) {
-	auto it = _clients.find(socket);
-	if (it == _clients.end()) {
-		return;
-	}
-
-	const auto clientId = it->second.tdlibClientId;
-	_tdlibClientIdToSocket.erase(clientId);
-
-	// Send close request to TDLib for this client.
-	const auto closeJson = QByteArray("{\"@type\":\"close\"}");
-	td_send(clientId, closeJson.constData());
-
-	_clients.erase(it);
+	_clients.erase(socket);
 	socket->deleteLater();
 }
 
@@ -211,20 +219,26 @@ void ControlServer::pollTdLib() {
 		auto obj = doc.object();
 		const auto clientId = obj.value("@client_id").toInt();
 
-		auto it = _tdlibClientIdToSocket.find(clientId);
-		if (it == _tdlibClientIdToSocket.end()) {
+		// Look up account index for this client ID.
+		auto accountIt = _clientIdToAccount.find(clientId);
+		if (accountIt == _clientIdToAccount.end()) {
 			continue;
 		}
-
-		auto *socket = it->second;
+		const auto accountIndex = accountIt->second;
 
 		// Remove @client_id, wrap in envelope with "type":"tdlib".
 		obj.remove("@client_id");
 
-		sendJson(socket, QJsonObject{
+		auto envelope = QJsonObject{
 			{ "type", "tdlib" },
+			{ "account", accountIndex },
 			{ "payload", obj },
-		});
+		};
+
+		// Broadcast to all connected sockets.
+		for (auto &[socket, info] : _clients) {
+			sendJson(socket, envelope);
+		}
 	}
 }
 

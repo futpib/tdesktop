@@ -91,6 +91,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/controls/location_picker.h"
 #include "tdlib/tdlib_bridge.h"
 #include "tdlib/td_json_server.h"
+#include "config.h"
+#include "core/version.h"
 #include "styles/style_window.h"
 
 #include <td/telegram/td_json_client.h>
@@ -222,6 +224,54 @@ void Application::closeAdditionalWindows() {
 }
 
 Application::~Application() {
+	// Shut down TDLib clients gracefully before anything else is destroyed.
+	// Send "close" to each client, then drain td_receive until all clients
+	// report authorizationStateClosed.  This ensures TDLib's internal
+	// schedulers and object pools are properly torn down.
+	{
+		_tdlibAccountsLifetime.destroy();
+
+		// Return all held NetQueryPtrs to TDLib's object pool so that
+		// the pool's storage_count reaches 0 before destruction.
+		// This also clears the external dispatch callback.
+		_tdlibBridge->releaseAllQueries();
+
+		auto clientIds = base::flat_set<int>();
+		for (const auto &[index, info] : _tdlibAccounts) {
+			clientIds.emplace(info.tdlibClientId);
+			_tdlibBridge->removeClient(info.tdlibClientId);
+			const auto closeJson = QByteArray("{\"@type\":\"close\"}");
+			td_send(info.tdlibClientId, closeJson.constData());
+		}
+		_tdlibAccounts.clear();
+		while (!clientIds.empty()) {
+			const auto *response = td_receive(1.0);
+			if (!response) {
+				continue;
+			}
+			auto doc = QJsonDocument::fromJson(QByteArray(response));
+			if (!doc.isObject()) {
+				continue;
+			}
+			const auto obj = doc.object();
+			// updateAuthorizationState with authorizationStateClosed
+			// is the signal that a client has fully shut down.
+			if (obj.value("@type").toString()
+					== u"updateAuthorizationState"_q) {
+				const auto state = obj.value(
+					"authorization_state").toObject();
+				if (state.value("@type").toString()
+						== u"authorizationStateClosed"_q) {
+					const auto cId = obj.value(
+						"@client_id").toInt();
+					clientIds.remove(cId);
+				}
+			}
+		}
+		_controlServer.reset();
+		_tdlibBridge.reset();
+	}
+
 	if (_saveSettingsTimer && _saveSettingsTimer->isActive()) {
 		Local::writeSettings();
 	}
@@ -393,15 +443,6 @@ void Application::run() {
 	_tdlibBridge = std::make_unique<TdBridge::TdLibBridge>();
 	_tdlibBridge->registerExternalDispatch();
 
-	// Connect to the active account's MTP instance.
-	_domain->activeValue(
-	) | rpl::map([](Main::Account *account) {
-		return account ? account->mtpValue() : rpl::never<not_null<MTP::Instance*>>();
-	}) | rpl::flatten_latest(
-	) | rpl::on_next([this](not_null<MTP::Instance*> instance) {
-		_tdlibBridge->setMtpInstance(instance);
-	}, _lifetime);
-
 	// Match TDLib log verbosity to tdesktop's debug mode.
 	{
 		const auto level = Logs::DebugEnabled() ? 5 : 2;
@@ -436,6 +477,9 @@ void Application::run() {
 	} else {
 		LOG(("Control Server: Listening on %1").arg(socketPath));
 	}
+
+	// Set up per-account TDLib clients once the domain is started.
+	setupTdLibAccounts();
 
 	startTray();
 
@@ -1984,6 +2028,101 @@ void Restart() {
 	   cSetRestartingToSettings(true);
    }
    Quit();
+}
+
+void Application::setupTdLibAccounts() {
+	// Register existing accounts.
+	for (const auto &[index, account] : _domain->accounts()) {
+		addTdLibAccount(index, account.get());
+	}
+
+	// Watch for accounts added/removed at runtime.
+	_domain->accountsChanges(
+	) | rpl::on_next([this] {
+		// Remove accounts that no longer exist.
+		auto toRemove = std::vector<int>();
+		for (const auto &[index, info] : _tdlibAccounts) {
+			const auto found = ranges::any_of(
+				_domain->accounts(),
+				[&](const auto &a) { return a.index == index; });
+			if (!found) {
+				toRemove.push_back(index);
+			}
+		}
+		for (const auto index : toRemove) {
+			removeTdLibAccount(index);
+		}
+
+		// Add new accounts.
+		for (const auto &[index, account] : _domain->accounts()) {
+			if (_tdlibAccounts.find(index) == _tdlibAccounts.end()) {
+				addTdLibAccount(index, account.get());
+			}
+		}
+	}, _tdlibAccountsLifetime);
+}
+
+void Application::addTdLibAccount(
+		int index,
+		not_null<Main::Account*> account) {
+	const auto clientId = td_create_client_id();
+
+	auto &info = _tdlibAccounts[index];
+	info.tdlibClientId = clientId;
+
+	_controlServer->addAccountClient(index, clientId);
+
+	// Subscribe to MTP instance changes for this account.
+	account->mtpValue(
+	) | rpl::on_next([this, clientId](not_null<MTP::Instance*> instance) {
+		_tdlibBridge->addClient(clientId, instance);
+	}, info.mtpLifetime);
+
+	// Send getOption to trigger Td actor creation.
+	const auto initRequest = QJsonDocument(QJsonObject{
+		{ "@type", "getOption" },
+		{ "name", "version" },
+	}).toJson(QJsonDocument::Compact);
+	td_send(clientId, initRequest.constData());
+
+	// Send setTdlibParameters to move past WaitParameters state.
+	// Actual MTP traffic is routed externally via the bridge, but
+	// TDLib requires initialization before accepting requests.
+	const auto dbDir = cWorkingDir()
+		+ u"tdata/tdlib_account_"_q
+		+ QString::number(index);
+	QDir().mkpath(dbDir);
+	const auto params = QJsonDocument(QJsonObject{
+		{ "@type", "setTdlibParameters" },
+		{ "database_directory", dbDir },
+		{ "use_message_database", false },
+		{ "use_chat_info_database", false },
+		{ "use_file_database", false },
+		{ "use_secret_chats", false },
+		{ "api_id", ApiId },
+		{ "api_hash", QString::fromLatin1(ApiHash) },
+		{ "system_language_code", "en" },
+		{ "device_model", "tdesktop" },
+		{ "application_version", QString::fromLatin1(AppVersionStr) },
+	}).toJson(QJsonDocument::Compact);
+	td_send(clientId, params.constData());
+}
+
+void Application::removeTdLibAccount(int index) {
+	auto it = _tdlibAccounts.find(index);
+	if (it == _tdlibAccounts.end()) {
+		return;
+	}
+
+	const auto clientId = it->second.tdlibClientId;
+	_controlServer->removeAccountClient(index);
+	_tdlibBridge->removeClient(clientId);
+
+	// Send close to clean up the TDLib client.
+	const auto closeJson = QByteArray("{\"@type\":\"close\"}");
+	td_send(clientId, closeJson.constData());
+
+	_tdlibAccounts.erase(it);
 }
 
 } // namespace Core

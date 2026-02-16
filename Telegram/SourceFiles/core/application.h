@@ -479,6 +479,17 @@ private:
 	std::unique_ptr<TdBridge::TdLibBridge> _tdlibBridge;
 	std::unique_ptr<TdBridge::ControlServer> _controlServer;
 
+	struct TdLibAccountInfo {
+		int tdlibClientId = 0;
+		rpl::lifetime mtpLifetime;
+	};
+	base::flat_map<int, TdLibAccountInfo> _tdlibAccounts;
+	rpl::lifetime _tdlibAccountsLifetime;
+
+	void setupTdLibAccounts();
+	void addTdLibAccount(int index, not_null<Main::Account*> account);
+	void removeTdLibAccount(int index);
+
 };
 
 [[nodiscard]] bool IsAppLaunched();

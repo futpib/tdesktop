@@ -18,11 +18,12 @@ namespace TdBridge {
 // Unix socket server exposing a line-delimited JSON protocol.
 //
 // Each request line is a JSON object with a "type" field:
-//   {"type":"tdlib", "payload":{...}}    — forwarded to TDLib (tdjson API)
+//   {"type":"tdlib", "account":0, "payload":{...}} — forwarded to TDLib
 //   {"type":"tdesktop", ...}             — tdesktop-specific control commands
 //
 // Responses are JSON objects with the same "type" prefix.
-// TDLib responses/updates carry "type":"tdlib" with TDLib JSON in "payload".
+// TDLib responses/updates carry "type":"tdlib" with TDLib JSON in "payload"
+// and "account" indicating which account the response belongs to.
 // Control responses carry "type":"tdesktop".
 class ControlServer final : public QObject {
 	Q_OBJECT
@@ -35,13 +36,16 @@ public:
 	bool start();
 	void stop();
 
+	void addAccountClient(int accountIndex, int tdlibClientId);
+	void removeAccountClient(int accountIndex);
+
 private:
 	void onNewConnection();
 	void onClientReadyRead(QLocalSocket *socket);
 	void onClientDisconnected(QLocalSocket *socket);
 	void pollTdLib();
 	void processLine(QLocalSocket *socket, const QByteArray &line);
-	void handleTdLibRequest(QLocalSocket *socket, const QJsonObject &payload);
+	void handleTdLibRequest(QLocalSocket *socket, const QJsonObject &obj);
 	void handleControlRequest(QLocalSocket *socket, const QJsonObject &obj);
 	void sendJson(QLocalSocket *socket, const QJsonObject &obj);
 
@@ -49,12 +53,13 @@ private:
 	QLocalServer _server;
 	QTimer _pollTimer;
 
-	struct ClientInfo {
-		int tdlibClientId = 0;
+	struct SocketInfo {
 		QByteArray readBuffer;
 	};
-	base::flat_map<QLocalSocket*, ClientInfo> _clients;
-	base::flat_map<int, QLocalSocket*> _tdlibClientIdToSocket;
+	base::flat_map<QLocalSocket*, SocketInfo> _clients;
+
+	base::flat_map<int, int> _accountToClientId;
+	base::flat_map<int, int> _clientIdToAccount;
 };
 
 } // namespace TdBridge

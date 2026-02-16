@@ -24,10 +24,15 @@ public:
 	TdLibBridge();
 	~TdLibBridge();
 
-	void setMtpInstance(not_null<MTP::Instance*> instance);
+	void addClient(int tdlibClientId, not_null<MTP::Instance*> instance);
+	void removeClient(int tdlibClientId);
 
 	// Registers this bridge as the TDLib external dispatch handler.
 	void registerExternalDispatch();
+
+	// Complete all held NetQueryPtrs with errors and return them to
+	// TDLib's object pool.  Must be called before TDLib is shut down.
+	void releaseAllQueries();
 
 private:
 	struct Private;

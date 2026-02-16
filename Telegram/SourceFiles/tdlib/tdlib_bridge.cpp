@@ -110,46 +110,108 @@ constexpr uint32 kGzipPackedConstructor = 0x3072cfa1;
 } // namespace
 
 struct TdLibBridge::Private {
-	MTP::Instance *mtp = nullptr;
-	std::mutex mutex;
 	struct PendingQuery {
 		td::NetQueryPtr query;
 		int32 rawDcId = 0;
 		td::NetQuery::Type type = td::NetQuery::Type::Common;
 	};
-	std::vector<PendingQuery> pendingBeforeMtp;
-	uint64 nextBridgeId = 1;
-	base::flat_map<mtpRequestId, td::NetQueryPtr> sentQueries;
+	struct ClientState {
+		MTP::Instance *mtp = nullptr;
+		std::vector<PendingQuery> pendingBeforeMtp;
+	};
 
-	void sendToMtp(TdLibBridge *bridge, PendingQuery &&pending);
-	void completeQuery(td::NetQueryPtr query);
-	[[nodiscard]] MTP::ShiftedDcId mapDcId(
+	std::mutex mutex;
+	base::flat_map<int, ClientState> clients;
+	uint64 nextBridgeId = 1;
+	base::flat_map<mtpRequestId, std::pair<int, td::NetQueryPtr>> sentQueries;
+
+	// Incoming queries stashed here so that the Qt queued lambda
+	// only carries a plain uint64 id — no NetQueryPtr.  This avoids
+	// crashes when Qt destroys pending events during QObject teardown
+	// (the NetQueryPtr destructor would touch TDLib's actor system
+	// which may already be shut down).
+	uint64 nextIncomingId = 1;
+	struct IncomingEntry {
+		td::int32 clientId;
+		PendingQuery pending;
+	};
+	base::flat_map<uint64, IncomingEntry> incoming;
+
+	void sendToMtp(TdLibBridge *bridge, int clientId, PendingQuery &&pending);
+	void completeQuery(int clientId, td::NetQueryPtr query);
+	[[nodiscard]] static MTP::ShiftedDcId mapDcId(
+		MTP::Instance *mtp,
 		int32 rawDcId,
-		td::NetQuery::Type type) const;
+		td::NetQuery::Type type);
 };
 
 TdLibBridge::TdLibBridge()
 : _d(std::make_unique<Private>()) {
 }
 
-TdLibBridge::~TdLibBridge() = default;
+TdLibBridge::~TdLibBridge() {
+	// Clear the external dispatch callback so TDLib doesn't call us
+	// after we're destroyed.
+	td::set_external_dispatch(nullptr);
+}
 
-void TdLibBridge::setMtpInstance(not_null<MTP::Instance*> instance) {
+void TdLibBridge::releaseAllQueries() {
+	// Stop accepting new queries from TDLib.
+	td::set_external_dispatch(nullptr);
+
 	std::lock_guard<std::mutex> lock(_d->mutex);
-	_d->mtp = instance;
+
+	// Complete all incoming (stashed but not yet dispatched) queries.
+	for (auto &[id, entry] : _d->incoming) {
+		entry.pending.query->set_error(
+			td::Status::Error(500, "Bridge shutting down"));
+		_d->completeQuery(entry.clientId, std::move(entry.pending.query));
+	}
+	_d->incoming.clear();
+
+	// Complete all queries waiting for MTP instance.
+	for (auto &[clientId, state] : _d->clients) {
+		for (auto &p : state.pendingBeforeMtp) {
+			p.query->set_error(
+				td::Status::Error(500, "Bridge shutting down"));
+			_d->completeQuery(clientId, std::move(p.query));
+		}
+		state.pendingBeforeMtp.clear();
+	}
+
+	// Complete all in-flight queries (sent to MTP, waiting for response).
+	for (auto &[requestId, pair] : _d->sentQueries) {
+		pair.second->set_error(
+			td::Status::Error(500, "Bridge shutting down"));
+		_d->completeQuery(pair.first, std::move(pair.second));
+	}
+	_d->sentQueries.clear();
+}
+
+void TdLibBridge::addClient(
+		int tdlibClientId,
+		not_null<MTP::Instance*> instance) {
+	std::lock_guard<std::mutex> lock(_d->mutex);
+	auto &state = _d->clients[tdlibClientId];
+	state.mtp = instance;
 
 	// Flush any queries that arrived before MTP was ready.
-	auto pending = std::move(_d->pendingBeforeMtp);
-	_d->pendingBeforeMtp.clear();
+	auto pending = std::move(state.pendingBeforeMtp);
+	state.pendingBeforeMtp.clear();
 
 	for (auto &p : pending) {
-		_d->sendToMtp(this, std::move(p));
+		_d->sendToMtp(this, tdlibClientId, std::move(p));
 	}
+}
+
+void TdLibBridge::removeClient(int tdlibClientId) {
+	std::lock_guard<std::mutex> lock(_d->mutex);
+	_d->clients.erase(tdlibClientId);
 }
 
 void TdLibBridge::registerExternalDispatch() {
 	td::set_external_dispatch(
-		[this](td::NetQueryPtr query) {
+		[this](td::int32 clientId, td::NetQueryPtr query) {
 			// Called from TDLib's scheduler thread.
 			const auto rawDcId = query->dc_id().is_main()
 				? 0
@@ -161,22 +223,58 @@ void TdLibBridge::registerExternalDispatch() {
 			pending.rawDcId = rawDcId;
 			pending.type = type;
 
-			QMetaObject::invokeMethod(this, [this, p = std::move(pending)]() mutable {
+			// Stash the query (which owns a NetQueryPtr) in a
+			// mutex-protected map and only pass a plain uint64 id
+			// through the Qt event queue.  This way, if the queued
+			// event is never delivered (e.g. during shutdown) its
+			// destructor won't touch TDLib's actor system.
+			uint64 incomingId;
+			{
 				std::lock_guard<std::mutex> lock(_d->mutex);
-				if (!_d->mtp) {
-					_d->pendingBeforeMtp.push_back(std::move(p));
+				incomingId = _d->nextIncomingId++;
+				_d->incoming.emplace(incomingId, Private::IncomingEntry{
+					clientId,
+					std::move(pending),
+				});
+			}
+
+			QMetaObject::invokeMethod(this, [this, incomingId]() {
+				std::lock_guard<std::mutex> lock(_d->mutex);
+				auto it = _d->incoming.find(incomingId);
+				if (it == _d->incoming.end()) {
+					return; // Already released during shutdown.
+				}
+				const auto cId = it->second.clientId;
+				auto p = std::move(it->second.pending);
+				_d->incoming.erase(it);
+
+				auto clientIt = _d->clients.find(cId);
+				if (clientIt == _d->clients.end()) {
+					// Client not registered yet - create entry and queue.
+					_d->clients[cId].pendingBeforeMtp.push_back(std::move(p));
 					return;
 				}
-				_d->sendToMtp(this, std::move(p));
+				if (!clientIt->second.mtp) {
+					clientIt->second.pendingBeforeMtp.push_back(std::move(p));
+					return;
+				}
+				_d->sendToMtp(this, cId, std::move(p));
 			}, Qt::QueuedConnection);
 		});
 }
 
 void TdLibBridge::Private::sendToMtp(
 		TdLibBridge *bridge,
+		int clientId,
 		PendingQuery &&pending) {
+	auto it = clients.find(clientId);
+	if (it == clients.end() || !it->second.mtp) {
+		return;
+	}
+	auto *mtp = it->second.mtp;
+
 	auto &query = pending.query;
-	const auto shiftedDcId = mapDcId(pending.rawDcId, pending.type);
+	const auto shiftedDcId = mapDcId(mtp, pending.rawDcId, pending.type);
 
 	auto serialized = BuildSerializedRequest(
 		query->query(),
@@ -186,14 +284,15 @@ void TdLibBridge::Private::sendToMtp(
 	serialized->requestId = requestId;
 
 	// Store the TDLib query so we can complete it when the response arrives.
-	sentQueries.emplace(requestId, std::move(query));
+	sentQueries.emplace(requestId, std::make_pair(clientId, std::move(query)));
 
 	auto done = [this, requestId](const MTP::Response &response) -> bool {
 		auto it = sentQueries.find(requestId);
 		if (it == sentQueries.end()) {
 			return true;
 		}
-		auto query = std::move(it->second);
+		const auto cId = it->second.first;
+		auto query = std::move(it->second.second);
 		sentQueries.erase(it);
 
 		// Convert the MTP response buffer to a td::BufferSlice.
@@ -208,7 +307,7 @@ void TdLibBridge::Private::sendToMtp(
 			query->set_error(td::Status::Error(500, "Empty response"));
 		}
 
-		completeQuery(std::move(query));
+		completeQuery(cId, std::move(query));
 		return true;
 	};
 
@@ -219,14 +318,15 @@ void TdLibBridge::Private::sendToMtp(
 		if (it == sentQueries.end()) {
 			return true;
 		}
-		auto query = std::move(it->second);
+		const auto cId = it->second.first;
+		auto query = std::move(it->second.second);
 		sentQueries.erase(it);
 
 		const auto code = error.code();
 		const auto message = error.type().toStdString();
 		query->set_error(td::Status::Error(code, message));
 
-		completeQuery(std::move(query));
+		completeQuery(cId, std::move(query));
 		return true;
 	};
 
@@ -239,13 +339,14 @@ void TdLibBridge::Private::sendToMtp(
 		0); // afterRequestId
 }
 
-void TdLibBridge::Private::completeQuery(td::NetQueryPtr query) {
-	td::NetQueryDispatcher::complete_net_query(std::move(query));
+void TdLibBridge::Private::completeQuery(int clientId, td::NetQueryPtr query) {
+	td::complete_external_query(clientId, std::move(query));
 }
 
 MTP::ShiftedDcId TdLibBridge::Private::mapDcId(
+		MTP::Instance *mtp,
 		int32 rawDcId,
-		td::NetQuery::Type type) const {
+		td::NetQuery::Type type) {
 	if (rawDcId == 0) {
 		// Main DC - use ShiftedDcId 0 which means "current main DC".
 		switch (type) {
