@@ -94,8 +94,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_window.h"
 
 #include <td/telegram/Client.h>
+#include <td/telegram/td_json_client.h>
 
 #include <QtCore/QDir>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QMimeDatabase>
 #include <QtGui/QGuiApplication>
@@ -402,6 +405,16 @@ void Application::run() {
 	) | rpl::on_next([this](not_null<MTP::Instance*> instance) {
 		_tdlibBridge->setMtpInstance(instance);
 	}, _lifetime);
+
+	// Match TDLib log verbosity to tdesktop's debug mode.
+	{
+		const auto level = Logs::DebugEnabled() ? 5 : 2;
+		const auto request = QJsonDocument(QJsonObject{
+			{ "@type", "setLogVerbosityLevel" },
+			{ "new_verbosity_level", level },
+		}).toJson(QJsonDocument::Compact);
+		td_execute(request.constData());
+	}
 
 	// Start the control socket server (TDLib + tdesktop commands).
 	// Place socket in $XDG_RUNTIME_DIR per XDG Base Directory spec.
