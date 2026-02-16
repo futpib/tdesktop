@@ -13,6 +13,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/flat_map.h"
 
+#include <rpl/lifetime.h>
+
+namespace Main {
+class Domain;
+class Account;
+} // namespace Main
+
+namespace Export {
+class Controller;
+} // namespace Export
+
 namespace TdBridge {
 
 // Unix socket server exposing a line-delimited JSON protocol.
@@ -36,6 +47,8 @@ public:
 	bool start();
 	void stop();
 
+	void setDomain(not_null<Main::Domain*> domain);
+
 	struct AccountInfo {
 		QString firstName;
 		QString lastName;
@@ -58,11 +71,22 @@ private:
 	void processLine(QLocalSocket *socket, const QByteArray &line);
 	void handleTdLibRequest(QLocalSocket *socket, const QJsonObject &obj);
 	void handleControlRequest(QLocalSocket *socket, const QJsonObject &obj);
+	void handleExportCommand(
+		QLocalSocket *socket,
+		const QJsonObject &payload,
+		const QJsonValue &extra);
+	void handleCancelExportCommand(
+		QLocalSocket *socket,
+		const QJsonObject &payload,
+		const QJsonValue &extra);
 	void sendJson(QLocalSocket *socket, const QJsonObject &obj);
+	void broadcastJson(const QJsonObject &obj);
 
 	QString _socketPath;
 	QLocalServer _server;
 	QTimer _pollTimer;
+
+	Main::Domain *_domain = nullptr;
 
 	struct SocketInfo {
 		QByteArray readBuffer;
@@ -75,6 +99,13 @@ private:
 	};
 	base::flat_map<int, AccountEntry> _accounts;
 	base::flat_map<int, int> _clientIdToAccount;
+
+	struct ActiveExport {
+		std::unique_ptr<Export::Controller> controller;
+		rpl::lifetime lifetime;
+		QJsonValue extra;
+	};
+	base::flat_map<int, ActiveExport> _activeExports;
 };
 
 } // namespace TdBridge

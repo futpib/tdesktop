@@ -8,6 +8,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "tdlib/td_json_server.h"
 
 #include "base/basic_types.h"
+#include "export/export_controller.h"
+#include "export/export_settings.h"
+#include "export/output/export_output_abstract.h"
+#include "main/main_domain.h"
+#include "main/main_account.h"
+#include "main/main_session.h"
+#include "mtproto/mtproto_config.h"
+#include "lang/lang_keys.h"
 
 #include <td/telegram/td_json_client.h>
 
@@ -17,6 +25,207 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QJsonObject>
 
 namespace TdBridge {
+namespace {
+
+Export::Settings ParseExportSettings(const QJsonObject &settingsJson) {
+	auto result = Export::Settings();
+
+	result.path = settingsJson.value("path").toString();
+
+	const auto formatStr = settingsJson.value("format").toString(u"json"_q);
+	if (formatStr == u"html"_q) {
+		result.format = Export::Output::Format::Html;
+	} else if (formatStr == u"json"_q) {
+		result.format = Export::Output::Format::Json;
+	} else if (formatStr == u"html_and_json"_q) {
+		result.format = Export::Output::Format::HtmlAndJson;
+	} else {
+		result.format = Export::Output::Format::Json;
+	}
+
+	const auto typesArray = settingsJson.value("types").toArray();
+	if (!typesArray.isEmpty()) {
+		result.types = Export::Settings::Types();
+		for (const auto &val : typesArray) {
+			const auto t = val.toString();
+			if (t == u"personal_info"_q) {
+				result.types |= Export::Settings::Type::PersonalInfo;
+			} else if (t == u"userpics"_q) {
+				result.types |= Export::Settings::Type::Userpics;
+			} else if (t == u"contacts"_q) {
+				result.types |= Export::Settings::Type::Contacts;
+			} else if (t == u"sessions"_q) {
+				result.types |= Export::Settings::Type::Sessions;
+			} else if (t == u"other_data"_q) {
+				result.types |= Export::Settings::Type::OtherData;
+			} else if (t == u"personal_chats"_q) {
+				result.types |= Export::Settings::Type::PersonalChats;
+			} else if (t == u"bot_chats"_q) {
+				result.types |= Export::Settings::Type::BotChats;
+			} else if (t == u"private_groups"_q) {
+				result.types |= Export::Settings::Type::PrivateGroups;
+			} else if (t == u"public_groups"_q) {
+				result.types |= Export::Settings::Type::PublicGroups;
+			} else if (t == u"private_channels"_q) {
+				result.types |= Export::Settings::Type::PrivateChannels;
+			} else if (t == u"public_channels"_q) {
+				result.types |= Export::Settings::Type::PublicChannels;
+			} else if (t == u"stories"_q) {
+				result.types |= Export::Settings::Type::Stories;
+			} else if (t == u"profile_music"_q) {
+				result.types |= Export::Settings::Type::ProfileMusic;
+			}
+		}
+	}
+
+	const auto mediaObj = settingsJson.value("media").toObject();
+	if (!mediaObj.isEmpty()) {
+		const auto mediaTypesArray = mediaObj.value("types").toArray();
+		if (!mediaTypesArray.isEmpty()) {
+			result.media.types = Export::MediaSettings::Types();
+			for (const auto &val : mediaTypesArray) {
+				const auto t = val.toString();
+				if (t == u"photo"_q) {
+					result.media.types |= Export::MediaSettings::Type::Photo;
+				} else if (t == u"video"_q) {
+					result.media.types |= Export::MediaSettings::Type::Video;
+				} else if (t == u"voice"_q) {
+					result.media.types |= Export::MediaSettings::Type::VoiceMessage;
+				} else if (t == u"video_message"_q) {
+					result.media.types |= Export::MediaSettings::Type::VideoMessage;
+				} else if (t == u"sticker"_q) {
+					result.media.types |= Export::MediaSettings::Type::Sticker;
+				} else if (t == u"gif"_q) {
+					result.media.types |= Export::MediaSettings::Type::GIF;
+				} else if (t == u"file"_q) {
+					result.media.types |= Export::MediaSettings::Type::File;
+				}
+			}
+		}
+		if (mediaObj.contains("size_limit")) {
+			result.media.sizeLimit = int64(mediaObj.value("size_limit").toDouble());
+		}
+	}
+
+	if (settingsJson.contains("from_date")) {
+		result.singlePeerFrom = TimeId(settingsJson.value("from_date").toInt());
+	}
+	if (settingsJson.contains("till_date")) {
+		result.singlePeerTill = TimeId(settingsJson.value("till_date").toInt());
+	}
+
+	return result;
+}
+
+Export::Environment PrepareEnvironment(Main::Session *session) {
+	auto result = Export::Environment();
+	if (session) {
+		result.internalLinksDomain = session->serverConfig().internalLinksDomain;
+	} else {
+		result.internalLinksDomain = u"https://t.me/"_q;
+	}
+	result.aboutTelegram = tr::lng_export_about_telegram(tr::now).toUtf8();
+	result.aboutContacts = tr::lng_export_about_contacts(tr::now).toUtf8();
+	result.aboutFrequent = tr::lng_export_about_frequent(tr::now).toUtf8();
+	result.aboutSessions = tr::lng_export_about_sessions(tr::now).toUtf8();
+	result.aboutWebSessions = tr::lng_export_about_web_sessions(tr::now).toUtf8();
+	result.aboutChats = tr::lng_export_about_chats(tr::now).toUtf8();
+	result.aboutLeftChats = tr::lng_export_about_left_chats(tr::now).toUtf8();
+	return result;
+}
+
+QString StepToString(Export::ProcessingState::Step step) {
+	using Step = Export::ProcessingState::Step;
+	switch (step) {
+	case Step::Initializing: return u"Initializing"_q;
+	case Step::DialogsList: return u"DialogsList"_q;
+	case Step::PersonalInfo: return u"PersonalInfo"_q;
+	case Step::Userpics: return u"Userpics"_q;
+	case Step::Stories: return u"Stories"_q;
+	case Step::ProfileMusic: return u"ProfileMusic"_q;
+	case Step::Contacts: return u"Contacts"_q;
+	case Step::Sessions: return u"Sessions"_q;
+	case Step::OtherData: return u"OtherData"_q;
+	case Step::Dialogs: return u"Dialogs"_q;
+	case Step::Topic: return u"Topic"_q;
+	}
+	return u"Unknown"_q;
+}
+
+QString EntityTypeToString(Export::ProcessingState::EntityType type) {
+	using Type = Export::ProcessingState::EntityType;
+	switch (type) {
+	case Type::Chat: return u"Chat"_q;
+	case Type::SavedMessages: return u"SavedMessages"_q;
+	case Type::RepliesMessages: return u"RepliesMessages"_q;
+	case Type::VerifyCodes: return u"VerifyCodes"_q;
+	case Type::Topic: return u"Topic"_q;
+	case Type::Other: return u"Other"_q;
+	}
+	return u"Unknown"_q;
+}
+
+QJsonObject ExportStateToJson(
+		int accountIndex,
+		const Export::State &state,
+		const QJsonValue &extra) {
+	auto payload = QJsonObject{
+		{ "command", "exportProgress" },
+		{ "account", accountIndex },
+	};
+
+	v::match(state, [&](const Export::ProcessingState &s) {
+		payload["state"] = "processing";
+		payload["step"] = StepToString(s.step);
+		payload["entity_type"] = EntityTypeToString(s.entityType);
+		if (!s.entityName.isEmpty()) {
+			payload["entity_name"] = s.entityName;
+		}
+		payload["entity_index"] = s.entityIndex;
+		payload["entity_count"] = s.entityCount;
+		payload["item_index"] = s.itemIndex;
+		payload["item_count"] = s.itemCount;
+		if (s.bytesCount > 0) {
+			payload["bytes_loaded"] = qint64(s.bytesLoaded);
+			payload["bytes_count"] = qint64(s.bytesCount);
+			if (!s.bytesName.isEmpty()) {
+				payload["bytes_name"] = s.bytesName;
+			}
+		}
+	}, [&](const Export::FinishedState &s) {
+		payload["state"] = "finished";
+		payload["path"] = s.path;
+		payload["files_count"] = s.filesCount;
+		payload["bytes_count"] = qint64(s.bytesCount);
+	}, [&](const Export::ApiErrorState &s) {
+		payload["state"] = "error";
+		payload["error_code"] = s.data.code();
+		payload["message"] = s.data.type();
+		if (!s.data.description().isEmpty()) {
+			payload["description"] = s.data.description();
+		}
+	}, [&](const Export::OutputErrorState &s) {
+		payload["state"] = "error";
+		payload["message"] = u"Output error"_q;
+		payload["path"] = s.path;
+	}, [&](const Export::CancelledState &) {
+		payload["state"] = "cancelled";
+	}, [&](const Export::PasswordCheckState &) {
+		payload["state"] = "password_check";
+	}, [&](v::null_t) {
+	});
+
+	if (!extra.isUndefined()) {
+		payload["@extra"] = extra;
+	}
+
+	return QJsonObject{
+		{ "type", "tdesktop" },
+		{ "payload", payload },
+	};
+}
+
+} // namespace
 
 ControlServer::ControlServer(const QString &socketPath, QObject *parent)
 : QObject(parent)
@@ -47,6 +256,8 @@ bool ControlServer::start() {
 void ControlServer::stop() {
 	_pollTimer.stop();
 
+	_activeExports.clear();
+
 	for (auto &[socket, info] : _clients) {
 		socket->disconnectFromServer();
 	}
@@ -56,6 +267,10 @@ void ControlServer::stop() {
 	_server.close();
 
 	QFile::remove(_socketPath);
+}
+
+void ControlServer::setDomain(not_null<Main::Domain*> domain) {
+	_domain = domain;
 }
 
 void ControlServer::addAccountClient(
@@ -87,6 +302,7 @@ void ControlServer::removeAccountClient(int accountIndex) {
 		_clientIdToAccount.erase(it->second.clientId);
 		_accounts.erase(it);
 	}
+	_activeExports.erase(accountIndex);
 }
 
 void ControlServer::onNewConnection() {
@@ -228,6 +444,10 @@ void ControlServer::handleControlRequest(
 			{ "type", "tdesktop" },
 			{ "payload", responsePayload },
 		});
+	} else if (command == u"export"_q) {
+		handleExportCommand(socket, payload, extra);
+	} else if (command == u"cancelExport"_q) {
+		handleCancelExportCommand(socket, payload, extra);
 	} else {
 		auto responsePayload = QJsonObject{
 			{ "error", u"Unknown command: \"%1\""_q.arg(command) },
@@ -242,6 +462,190 @@ void ControlServer::handleControlRequest(
 	}
 }
 
+void ControlServer::handleExportCommand(
+		QLocalSocket *socket,
+		const QJsonObject &payload,
+		const QJsonValue &extra) {
+	if (!_domain) {
+		auto responsePayload = QJsonObject{
+			{ "command", "exportProgress" },
+			{ "state", "error" },
+			{ "message", "Domain not available" },
+		};
+		if (!extra.isUndefined()) {
+			responsePayload["@extra"] = extra;
+		}
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+		return;
+	}
+
+	const auto accountIndex = payload.value("account").toInt(0);
+
+	if (_activeExports.contains(accountIndex)) {
+		auto responsePayload = QJsonObject{
+			{ "command", "exportProgress" },
+			{ "account", accountIndex },
+			{ "state", "error" },
+			{ "message", "Export already running for this account" },
+		};
+		if (!extra.isUndefined()) {
+			responsePayload["@extra"] = extra;
+		}
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+		return;
+	}
+
+	// Find the account by index.
+	Main::Account *account = nullptr;
+	for (const auto &[idx, acc] : _domain->accounts()) {
+		if (idx == accountIndex) {
+			account = acc.get();
+			break;
+		}
+	}
+	if (!account) {
+		auto responsePayload = QJsonObject{
+			{ "command", "exportProgress" },
+			{ "account", accountIndex },
+			{ "state", "error" },
+			{ "message", u"Account %1 not found"_q.arg(accountIndex) },
+		};
+		if (!extra.isUndefined()) {
+			responsePayload["@extra"] = extra;
+		}
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+		return;
+	}
+
+	if (!account->sessionExists()) {
+		auto responsePayload = QJsonObject{
+			{ "command", "exportProgress" },
+			{ "account", accountIndex },
+			{ "state", "error" },
+			{ "message", u"Account %1 has no active session"_q.arg(accountIndex) },
+		};
+		if (!extra.isUndefined()) {
+			responsePayload["@extra"] = extra;
+		}
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+		return;
+	}
+
+	const auto settingsJson = payload.value("settings").toObject();
+	if (settingsJson.value("path").toString().isEmpty()) {
+		auto responsePayload = QJsonObject{
+			{ "command", "exportProgress" },
+			{ "account", accountIndex },
+			{ "state", "error" },
+			{ "message", "Missing required field: settings.path" },
+		};
+		if (!extra.isUndefined()) {
+			responsePayload["@extra"] = extra;
+		}
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+		return;
+	}
+
+	auto settings = ParseExportSettings(settingsJson);
+
+	auto &activeExport = _activeExports[accountIndex];
+	activeExport.extra = extra;
+	activeExport.controller = std::make_unique<Export::Controller>(
+		&account->mtp(),
+		MTP_inputPeerEmpty());
+
+	auto *session = account->maybeSession();
+	auto environment = PrepareEnvironment(session);
+
+	activeExport.controller->state(
+	) | rpl::on_next([this, accountIndex](Export::State state) {
+		auto it = _activeExports.find(accountIndex);
+		if (it == _activeExports.end()) {
+			return;
+		}
+		const auto &activeExtra = it->second.extra;
+		const auto isTerminal = v::is<Export::FinishedState>(state)
+			|| v::is<Export::ApiErrorState>(state)
+			|| v::is<Export::OutputErrorState>(state)
+			|| v::is<Export::CancelledState>(state);
+
+		broadcastJson(ExportStateToJson(accountIndex, state, activeExtra));
+
+		if (isTerminal) {
+			_activeExports.erase(accountIndex);
+		}
+	}, activeExport.lifetime);
+
+	activeExport.controller->startExport(settings, environment);
+
+	// Send acknowledgment.
+	auto responsePayload = QJsonObject{
+		{ "command", "exportStarted" },
+		{ "account", accountIndex },
+	};
+	if (!extra.isUndefined()) {
+		responsePayload["@extra"] = extra;
+	}
+	sendJson(socket, QJsonObject{
+		{ "type", "tdesktop" },
+		{ "payload", responsePayload },
+	});
+}
+
+void ControlServer::handleCancelExportCommand(
+		QLocalSocket *socket,
+		const QJsonObject &payload,
+		const QJsonValue &extra) {
+	const auto accountIndex = payload.value("account").toInt(0);
+
+	auto it = _activeExports.find(accountIndex);
+	if (it == _activeExports.end()) {
+		auto responsePayload = QJsonObject{
+			{ "command", "exportProgress" },
+			{ "account", accountIndex },
+			{ "state", "error" },
+			{ "message", u"No active export for account %1"_q.arg(accountIndex) },
+		};
+		if (!extra.isUndefined()) {
+			responsePayload["@extra"] = extra;
+		}
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+		return;
+	}
+
+	it->second.controller->cancelExportFast();
+
+	auto responsePayload = QJsonObject{
+		{ "command", "exportCancelled" },
+		{ "account", accountIndex },
+	};
+	if (!extra.isUndefined()) {
+		responsePayload["@extra"] = extra;
+	}
+	sendJson(socket, QJsonObject{
+		{ "type", "tdesktop" },
+		{ "payload", responsePayload },
+	});
+}
+
 void ControlServer::sendJson(
 		QLocalSocket *socket,
 		const QJsonObject &obj) {
@@ -250,6 +654,12 @@ void ControlServer::sendJson(
 	}
 	socket->write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 	socket->write("\n");
+}
+
+void ControlServer::broadcastJson(const QJsonObject &obj) {
+	for (auto &[socket, info] : _clients) {
+		sendJson(socket, obj);
+	}
 }
 
 void ControlServer::onClientDisconnected(QLocalSocket *socket) {
@@ -290,9 +700,7 @@ void ControlServer::pollTdLib() {
 		};
 
 		// Broadcast to all connected sockets.
-		for (auto &[socket, info] : _clients) {
-			sendJson(socket, envelope);
-		}
+		broadcastJson(envelope);
 	}
 }
 

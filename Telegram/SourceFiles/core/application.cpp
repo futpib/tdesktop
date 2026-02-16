@@ -478,6 +478,7 @@ void Application::run() {
 	} else {
 		LOG(("Control Server: Listening on %1").arg(socketPath));
 	}
+	_controlServer->setDomain(_domain.get());
 
 	// Set up per-account TDLib clients once the domain is started.
 	setupTdLibAccounts();
