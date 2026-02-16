@@ -113,7 +113,7 @@ void ControlServer::processLine(
 	if (type == u"tdlib"_q) {
 		handleTdLibRequest(socket, obj.value("payload").toObject());
 	} else if (type == u"tdesktop"_q) {
-		handleControlRequest(socket, obj);
+		handleControlRequest(socket, obj.value("payload").toObject());
 	} else {
 		sendJson(socket, QJsonObject{
 			{ "type", "error" },
@@ -139,28 +139,32 @@ void ControlServer::handleTdLibRequest(
 
 void ControlServer::handleControlRequest(
 		QLocalSocket *socket,
-		const QJsonObject &obj) {
-	const auto command = obj.value("command").toString();
-	const auto extra = obj.value("@extra");
+		const QJsonObject &payload) {
+	const auto command = payload.value("command").toString();
+	const auto extra = payload.value("@extra");
 
 	if (command == u"ping"_q) {
-		auto response = QJsonObject{
-			{ "type", "tdesktop" },
+		auto responsePayload = QJsonObject{
 			{ "command", "pong" },
 		};
 		if (!extra.isUndefined()) {
-			response["@extra"] = extra;
+			responsePayload["@extra"] = extra;
 		}
-		sendJson(socket, response);
-	} else {
-		auto response = QJsonObject{
+		sendJson(socket, QJsonObject{
 			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+	} else {
+		auto responsePayload = QJsonObject{
 			{ "error", u"Unknown command: \"%1\""_q.arg(command) },
 		};
 		if (!extra.isUndefined()) {
-			response["@extra"] = extra;
+			responsePayload["@extra"] = extra;
 		}
-		sendJson(socket, response);
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
 	}
 }
 
