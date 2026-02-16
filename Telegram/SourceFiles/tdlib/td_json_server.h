@@ -36,7 +36,18 @@ public:
 	bool start();
 	void stop();
 
+	struct AccountInfo {
+		QString firstName;
+		QString lastName;
+		QString username;
+		QString phone;
+		uint64 userId = 0;
+	};
+
 	void addAccountClient(int accountIndex, int tdlibClientId);
+	void addAccountClient(int accountIndex, int tdlibClientId,
+		const AccountInfo &info);
+	void updateAccountInfo(int accountIndex, const AccountInfo &info);
 	void removeAccountClient(int accountIndex);
 
 private:
@@ -58,7 +69,11 @@ private:
 	};
 	base::flat_map<QLocalSocket*, SocketInfo> _clients;
 
-	base::flat_map<int, int> _accountToClientId;
+	struct AccountEntry {
+		int clientId = 0;
+		AccountInfo info;
+	};
+	base::flat_map<int, AccountEntry> _accounts;
 	base::flat_map<int, int> _clientIdToAccount;
 };
 

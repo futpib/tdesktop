@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_abstract_structure.h"
 #include "data/data_channel.h"
+#include "data/data_user.h"
 #include "data/data_forum.h"
 #include "data/data_message_reactions.h"
 #include "data/data_session.h"
@@ -2070,7 +2071,33 @@ void Application::addTdLibAccount(
 	auto &info = _tdlibAccounts[index];
 	info.tdlibClientId = clientId;
 
-	_controlServer->addAccountClient(index, clientId);
+	// Populate account info from the session if available.
+	auto accountInfo = TdBridge::ControlServer::AccountInfo();
+	if (const auto session = account->maybeSession()) {
+		const auto user = session->user();
+		accountInfo.firstName = user->firstName;
+		accountInfo.lastName = user->lastName;
+		accountInfo.username = user->username();
+		accountInfo.phone = user->phone();
+		accountInfo.userId = session->userId().bare;
+	}
+	_controlServer->addAccountClient(index, clientId, accountInfo);
+
+	// Update account info when session appears or changes.
+	account->sessionValue(
+	) | rpl::on_next([this, idx = index](Main::Session *session) {
+		if (!session) {
+			return;
+		}
+		const auto user = session->user();
+		auto ai = TdBridge::ControlServer::AccountInfo();
+		ai.firstName = user->firstName;
+		ai.lastName = user->lastName;
+		ai.username = user->username();
+		ai.phone = user->phone();
+		ai.userId = session->userId().bare;
+		_controlServer->updateAccountInfo(idx, ai);
+	}, info.mtpLifetime);
 
 	// Subscribe to MTP instance changes for this account.
 	account->mtpValue(

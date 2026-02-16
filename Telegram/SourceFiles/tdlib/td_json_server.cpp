@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <td/telegram/td_json_client.h>
 
 #include <QtCore/QFile>
+#include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 
@@ -50,23 +51,41 @@ void ControlServer::stop() {
 		socket->disconnectFromServer();
 	}
 	_clients.clear();
-	_accountToClientId.clear();
+	_accounts.clear();
 	_clientIdToAccount.clear();
 	_server.close();
 
 	QFile::remove(_socketPath);
 }
 
-void ControlServer::addAccountClient(int accountIndex, int tdlibClientId) {
-	_accountToClientId[accountIndex] = tdlibClientId;
+void ControlServer::addAccountClient(
+		int accountIndex,
+		int tdlibClientId) {
+	addAccountClient(accountIndex, tdlibClientId, AccountInfo());
+}
+
+void ControlServer::addAccountClient(
+		int accountIndex,
+		int tdlibClientId,
+		const AccountInfo &info) {
+	_accounts[accountIndex] = AccountEntry{ tdlibClientId, info };
 	_clientIdToAccount[tdlibClientId] = accountIndex;
 }
 
+void ControlServer::updateAccountInfo(
+		int accountIndex,
+		const AccountInfo &info) {
+	auto it = _accounts.find(accountIndex);
+	if (it != _accounts.end()) {
+		it->second.info = info;
+	}
+}
+
 void ControlServer::removeAccountClient(int accountIndex) {
-	auto it = _accountToClientId.find(accountIndex);
-	if (it != _accountToClientId.end()) {
-		_clientIdToAccount.erase(it->second);
-		_accountToClientId.erase(it);
+	auto it = _accounts.find(accountIndex);
+	if (it != _accounts.end()) {
+		_clientIdToAccount.erase(it->second.clientId);
+		_accounts.erase(it);
 	}
 }
 
@@ -141,8 +160,8 @@ void ControlServer::handleTdLibRequest(
 	const auto accountIndex = obj.value("account").toInt(0);
 	const auto payload = obj.value("payload").toObject();
 
-	auto it = _accountToClientId.find(accountIndex);
-	if (it == _accountToClientId.end()) {
+	auto it = _accounts.find(accountIndex);
+	if (it == _accounts.end()) {
 		sendJson(socket, QJsonObject{
 			{ "type", "error" },
 			{ "account", accountIndex },
@@ -154,7 +173,7 @@ void ControlServer::handleTdLibRequest(
 	}
 
 	const auto json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-	td_send(it->second, json.constData());
+	td_send(it->second.clientId, json.constData());
 }
 
 void ControlServer::handleControlRequest(
@@ -166,6 +185,41 @@ void ControlServer::handleControlRequest(
 	if (command == u"ping"_q) {
 		auto responsePayload = QJsonObject{
 			{ "command", "pong" },
+		};
+		if (!extra.isUndefined()) {
+			responsePayload["@extra"] = extra;
+		}
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+	} else if (command == u"listAccounts"_q) {
+		auto accounts = QJsonArray();
+		for (const auto &[accountIndex, entry] : _accounts) {
+			auto obj = QJsonObject{
+				{ "index", accountIndex },
+			};
+			const auto &info = entry.info;
+			if (!info.firstName.isEmpty()) {
+				obj["first_name"] = info.firstName;
+			}
+			if (!info.lastName.isEmpty()) {
+				obj["last_name"] = info.lastName;
+			}
+			if (!info.username.isEmpty()) {
+				obj["username"] = info.username;
+			}
+			if (!info.phone.isEmpty()) {
+				obj["phone"] = info.phone;
+			}
+			if (info.userId) {
+				obj["user_id"] = qint64(info.userId);
+			}
+			accounts.append(obj);
+		}
+		auto responsePayload = QJsonObject{
+			{ "command", "listAccounts" },
+			{ "accounts", accounts },
 		};
 		if (!extra.isUndefined()) {
 			responsePayload["@extra"] = extra;
