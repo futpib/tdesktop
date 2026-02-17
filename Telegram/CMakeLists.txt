@@ -2053,6 +2053,11 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "${td_include_dirs}"
 )
 
+set_source_files_properties(${TL_TELEGRAM_API_JSON_AUTO} PROPERTIES GENERATED TRUE)
+set_source_files_properties(${TL_TELEGRAM_API_JSON_AUTO} PROPERTIES COMPILE_OPTIONS "${td_include_dirs}")
+set_source_files_properties(${TL_TELEGRAM_API_JSON_AUTO} PROPERTIES SKIP_AUTOGEN TRUE)
+target_sources(Telegram PRIVATE ${TL_TELEGRAM_API_JSON_AUTO})
+
 target_compile_definitions(Telegram
 PRIVATE
     TDESKTOP_API_ID=${TDESKTOP_API_ID}

@@ -31,11 +31,13 @@ namespace TdBridge {
 // Each request line is a JSON object with a "type" field:
 //   {"type":"tdlib", "account":0, "payload":{...}} — forwarded to TDLib
 //   {"type":"tdesktop", ...}             — tdesktop-specific control commands
+//   {"type":"mtp", "account":0, "payload":{...}}   — raw MTP API calls
 //
 // Responses are JSON objects with the same "type" prefix.
 // TDLib responses/updates carry "type":"tdlib" with TDLib JSON in "payload"
 // and "account" indicating which account the response belongs to.
 // Control responses carry "type":"tdesktop".
+// MTP responses carry "type":"mtp" with the raw telegram_api result in "payload".
 class ControlServer final : public QObject {
 	Q_OBJECT
 
@@ -71,6 +73,7 @@ private:
 	void processLine(QLocalSocket *socket, const QByteArray &line);
 	void handleTdLibRequest(QLocalSocket *socket, const QJsonObject &obj);
 	void handleControlRequest(QLocalSocket *socket, const QJsonObject &obj);
+	void handleMtpRequest(QLocalSocket *socket, const QJsonObject &obj);
 	void handleExportCommand(
 		QLocalSocket *socket,
 		const QJsonObject &payload,

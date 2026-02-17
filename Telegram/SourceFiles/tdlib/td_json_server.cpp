@@ -14,10 +14,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
+#include "mtproto/mtp_instance.h"
+#include "mtproto/core_types.h"
+#include "mtproto/details/mtproto_serialized_request.h"
+#include "mtproto/mtproto_response.h"
 #include "mtproto/mtproto_config.h"
 #include "lang/lang_keys.h"
 
 #include <td/telegram/td_json_client.h>
+#include <td/telegram/telegram_api.h>
+#include <td/telegram/telegram_api.hpp>
+#include <td/telegram/telegram_api_json.h>
+#include <td/tl/tl_json.h>
+#include <td/utils/JsonBuilder.h>
+#include <td/utils/buffer.h>
+#include <td/utils/tl_storers.h>
+#include <td/utils/tl_parsers.h>
 
 #include <QtCore/QFile>
 #include <QtCore/QJsonArray>
@@ -359,12 +371,14 @@ void ControlServer::processLine(
 		handleTdLibRequest(socket, obj);
 	} else if (type == u"tdesktop"_q) {
 		handleControlRequest(socket, obj.value("payload").toObject());
+	} else if (type == u"mtp"_q) {
+		handleMtpRequest(socket, obj);
 	} else {
 		sendJson(socket, QJsonObject{
 			{ "type", "error" },
 			{ "code", 400 },
 			{ "message",
-				u"Unknown type: \"%1\". Expected \"tdlib\" or \"tdesktop\"."_q
+				u"Unknown type: \"%1\". Expected \"tdlib\", \"tdesktop\", or \"mtp\"."_q
 					.arg(type) },
 		});
 	}
@@ -390,6 +404,286 @@ void ControlServer::handleTdLibRequest(
 
 	const auto json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 	td_send(it->second.clientId, json.constData());
+}
+
+void ControlServer::handleMtpRequest(
+		QLocalSocket *socket,
+		const QJsonObject &obj) {
+	const auto accountIndex = obj.value("account").toInt(0);
+	const auto payloadValue = obj.value("payload");
+	const auto extra = obj.value("@extra");
+
+	if (!payloadValue.isObject()) {
+		sendJson(socket, QJsonObject{
+			{ "type", "mtp" },
+			{ "account", accountIndex },
+			{ "payload", QJsonObject{
+				{ "@type", "error" },
+				{ "code", 400 },
+				{ "message", "Missing or invalid 'payload' object" },
+			}},
+		});
+		return;
+	}
+
+	if (!_domain) {
+		auto response = QJsonObject{
+			{ "type", "mtp" },
+			{ "account", accountIndex },
+			{ "payload", QJsonObject{
+				{ "@type", "error" },
+				{ "code", 500 },
+				{ "message", "Domain not available" },
+			}},
+		};
+		if (!extra.isUndefined()) {
+			response["@extra"] = extra;
+		}
+		sendJson(socket, response);
+		return;
+	}
+
+	// Find the account.
+	Main::Account *account = nullptr;
+	for (const auto &[idx, acc] : _domain->accounts()) {
+		if (idx == accountIndex) {
+			account = acc.get();
+			break;
+		}
+	}
+	if (!account || !account->sessionExists()) {
+		auto response = QJsonObject{
+			{ "type", "mtp" },
+			{ "account", accountIndex },
+			{ "payload", QJsonObject{
+				{ "@type", "error" },
+				{ "code", 404 },
+				{ "message",
+					u"No active session for account %1"_q
+						.arg(accountIndex) },
+			}},
+		};
+		if (!extra.isUndefined()) {
+			response["@extra"] = extra;
+		}
+		sendJson(socket, response);
+		return;
+	}
+
+	// Parse the JSON payload into a telegram_api::Function.
+	auto payloadJson = QJsonDocument(
+		payloadValue.toObject()).toJson(QJsonDocument::Compact);
+	auto r_json_value = td::json_decode(
+		td::MutableSlice(payloadJson.data(), payloadJson.size()));
+	if (r_json_value.is_error()) {
+		auto response = QJsonObject{
+			{ "type", "mtp" },
+			{ "account", accountIndex },
+			{ "payload", QJsonObject{
+				{ "@type", "error" },
+				{ "code", 400 },
+				{ "message", u"JSON decode error: %1"_q.arg(
+					QString::fromStdString(
+						r_json_value.error().message().str())) },
+			}},
+		};
+		if (!extra.isUndefined()) {
+			response["@extra"] = extra;
+		}
+		sendJson(socket, response);
+		return;
+	}
+
+	td::telegram_api::object_ptr<td::telegram_api::Function> func;
+	auto status = td::telegram_api::from_json(
+		func, r_json_value.move_as_ok());
+	if (status.is_error() || !func) {
+		auto response = QJsonObject{
+			{ "type", "mtp" },
+			{ "account", accountIndex },
+			{ "payload", QJsonObject{
+				{ "@type", "error" },
+				{ "code", 400 },
+				{ "message", u"Failed to parse telegram_api function: %1"_q
+					.arg(QString::fromStdString(
+						status.is_error()
+							? status.error().message().str()
+							: "null result")) },
+			}},
+		};
+		if (!extra.isUndefined()) {
+			response["@extra"] = extra;
+		}
+		sendJson(socket, response);
+		return;
+	}
+
+	// Serialize the Function to TL binary.
+	td::TlStorerCalcLength calcLength;
+	func->store(calcLength);
+	const auto tlSize = calcLength.get_length();
+
+	auto tlBuffer = std::vector<unsigned char>(tlSize);
+	td::TlStorerUnsafe storer(tlBuffer.data());
+	func->store(storer);
+
+	// Build a SerializedRequest from the raw TL bytes.
+	const auto bodySizeInInts = static_cast<uint32>((tlSize + 3) / 4);
+	auto serialized = MTP::details::SerializedRequest::Prepare(
+		bodySizeInInts);
+	auto &buf = *serialized;
+
+	const auto *srcInts = reinterpret_cast<const mtpPrime *>(
+		tlBuffer.data());
+	for (uint32 i = 0; i < bodySizeInInts; ++i) {
+		if ((i + 1) * sizeof(mtpPrime) <= tlSize) {
+			buf.push_back(srcInts[i]);
+		} else {
+			mtpPrime last = 0;
+			memcpy(&last, tlBuffer.data() + i * sizeof(mtpPrime),
+				tlSize - i * sizeof(mtpPrime));
+			buf.push_back(last);
+		}
+	}
+	serialized->needsLayer = true;
+
+	const auto requestId = MTP::details::GetNextRequestId();
+	serialized->requestId = requestId;
+
+	// Prevent socket and extra from dangling in the callbacks
+	// by capturing copies/weak references.
+	auto socketPtr = QPointer<QLocalSocket>(socket);
+	auto extraCopy = extra;
+
+	auto done = [this, socketPtr, accountIndex, extraCopy](
+			const MTP::Response &response) -> bool {
+		if (!socketPtr) {
+			return true;
+		}
+
+		const auto &reply = response.reply;
+		if (reply.isEmpty()) {
+			auto resp = QJsonObject{
+				{ "type", "mtp" },
+				{ "account", accountIndex },
+				{ "payload", QJsonObject{
+					{ "@type", "error" },
+					{ "code", 500 },
+					{ "message", "Empty response" },
+				}},
+			};
+			if (!extraCopy.isUndefined()) {
+				resp["@extra"] = extraCopy;
+			}
+			sendJson(socketPtr.data(), resp);
+			return true;
+		}
+
+		// Parse the raw MTP response into a telegram_api::Object.
+		const auto *data = reinterpret_cast<const char *>(
+			reply.constData());
+		const auto size = static_cast<size_t>(
+			reply.size() * sizeof(mtpPrime));
+
+		// Check for Bool responses (boolTrue/boolFalse) which are
+		// not part of the Object hierarchy.
+		constexpr int32_t kBoolFalse = 0xbc799737;
+		constexpr int32_t kBoolTrue = 0x997275b5;
+		if (size >= sizeof(int32_t)) {
+			int32_t constructorId = 0;
+			memcpy(&constructorId, data, sizeof(int32_t));
+			if (constructorId == kBoolTrue
+				|| constructorId == kBoolFalse) {
+				auto resp = QJsonObject{
+					{ "type", "mtp" },
+					{ "account", accountIndex },
+					{ "payload", QJsonObject{
+						{ "@type",
+							constructorId == kBoolTrue
+								? "boolTrue"
+								: "boolFalse" },
+					}},
+				};
+				if (!extraCopy.isUndefined()) {
+					resp["@extra"] = extraCopy;
+				}
+				sendJson(socketPtr.data(), resp);
+				return true;
+			}
+		}
+
+		auto bufSlice = td::BufferSlice(td::Slice(data, size));
+		td::TlBufferParser parser(&bufSlice);
+		auto resultObj = td::telegram_api::Object::fetch(parser);
+		parser.fetch_end();
+
+		if (parser.get_error() || !resultObj) {
+			auto resp = QJsonObject{
+				{ "type", "mtp" },
+				{ "account", accountIndex },
+				{ "payload", QJsonObject{
+					{ "@type", "error" },
+					{ "code", 500 },
+					{ "message", u"Failed to parse response: %1"_q.arg(
+						parser.get_error()
+							? QString::fromUtf8(parser.get_error())
+							: u"null"_q) },
+				}},
+			};
+			if (!extraCopy.isUndefined()) {
+				resp["@extra"] = extraCopy;
+			}
+			sendJson(socketPtr.data(), resp);
+			return true;
+		}
+
+		// Serialize the result object to JSON.
+		auto jsonStr = td::json_encode<std::string>(
+			td::ToJson(*resultObj));
+		auto jsonDoc = QJsonDocument::fromJson(
+			QByteArray::fromRawData(jsonStr.data(), jsonStr.size()));
+
+		auto resp = QJsonObject{
+			{ "type", "mtp" },
+			{ "account", accountIndex },
+			{ "payload", jsonDoc.object() },
+		};
+		if (!extraCopy.isUndefined()) {
+			resp["@extra"] = extraCopy;
+		}
+		sendJson(socketPtr.data(), resp);
+		return true;
+	};
+
+	auto fail = [this, socketPtr, accountIndex, extraCopy](
+			const MTP::Error &error,
+			const MTP::Response &) -> bool {
+		if (!socketPtr) {
+			return true;
+		}
+		auto resp = QJsonObject{
+			{ "type", "mtp" },
+			{ "account", accountIndex },
+			{ "payload", QJsonObject{
+				{ "@type", "error" },
+				{ "code", error.code() },
+				{ "message", error.type() },
+			}},
+		};
+		if (!extraCopy.isUndefined()) {
+			resp["@extra"] = extraCopy;
+		}
+		sendJson(socketPtr.data(), resp);
+		return true;
+	};
+
+	account->mtp().sendSerialized(
+		requestId,
+		std::move(serialized),
+		MTP::ResponseHandler{ std::move(done), std::move(fail) },
+		0,  // shiftedDcId: 0 = main DC
+		0,  // msCanWait
+		0); // afterRequestId
 }
 
 void ControlServer::handleControlRequest(
