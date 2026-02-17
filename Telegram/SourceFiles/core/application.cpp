@@ -229,7 +229,7 @@ Application::~Application() {
 	// Send "close" to each client, then drain td_receive until all clients
 	// report authorizationStateClosed.  This ensures TDLib's internal
 	// schedulers and object pools are properly torn down.
-	{
+	if (_tdlibBridge) {
 		_tdlibAccountsLifetime.destroy();
 
 		// Return all held NetQueryPtrs to TDLib's object pool so that
@@ -439,49 +439,61 @@ void Application::run() {
 
 	startDomain();
 
-	// Initialize TDLib bridge: routes TDLib's network queries through
-	// tdesktop's MTP::Instance.
-	_tdlibBridge = std::make_unique<TdBridge::TdLibBridge>();
-	_tdlibBridge->registerExternalDispatch();
-
-	// Match TDLib log verbosity to tdesktop's debug mode.
-	{
-		const auto level = Logs::DebugEnabled() ? 5 : 2;
-		const auto request = QJsonDocument(QJsonObject{
-			{ "@type", "setLogVerbosityLevel" },
-			{ "new_verbosity_level", level },
-		}).toJson(QJsonDocument::Compact);
-		td_execute(request.constData());
-	}
-
-	// Start the control socket server (TDLib + tdesktop commands).
-	// Place socket in $XDG_RUNTIME_DIR per XDG Base Directory spec.
-	// If XDG_RUNTIME_DIR is not set, fall back to /tmp with a
-	// user-specific directory (0700 permissions) and warn.
-	auto runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
-	if (runtimeDir.isEmpty()) {
-		LOG(("Control Server WARNING: XDG_RUNTIME_DIR is not set. "
-			"Falling back to a replacement directory in /tmp."));
-		runtimeDir = u"/tmp/tdesktop-%1"_q
-			.arg(uint(getuid()));
-		QDir().mkpath(runtimeDir);
-		QFile::setPermissions(
-			runtimeDir,
-			QFileDevice::ReadOwner
-				| QFileDevice::WriteOwner
-				| QFileDevice::ExeOwner);
-	}
-	const auto socketPath = runtimeDir + u"/tdesktop.sock"_q;
-	_controlServer = std::make_unique<TdBridge::ControlServer>(socketPath);
-	if (!_controlServer->start()) {
-		LOG(("Control Server: Failed to start on %1").arg(socketPath));
+	// Start the control socket server and TDLib bridge only when
+	// TDESKTOP_SOCKET_ACCOUNTS is set. This env var specifies which
+	// accounts are accessible via the socket (comma-separated indices,
+	// usernames, or "*" for all). If unset, no socket is created and
+	// TDLib clients are not spun up.
+	const auto socketAccountsVar = qEnvironmentVariable("TDESKTOP_SOCKET_ACCOUNTS");
+	if (socketAccountsVar.isEmpty()) {
+		LOG(("Control Server: Disabled (TDESKTOP_SOCKET_ACCOUNTS not set)"));
 	} else {
-		LOG(("Control Server: Listening on %1").arg(socketPath));
-	}
-	_controlServer->setDomain(_domain.get());
+		// Initialize TDLib bridge: routes TDLib's network queries through
+		// tdesktop's MTP::Instance.
+		_tdlibBridge = std::make_unique<TdBridge::TdLibBridge>();
+		_tdlibBridge->registerExternalDispatch();
 
-	// Set up per-account TDLib clients once the domain is started.
-	setupTdLibAccounts();
+		// Match TDLib log verbosity to tdesktop's debug mode.
+		{
+			const auto level = Logs::DebugEnabled() ? 5 : 2;
+			const auto request = QJsonDocument(QJsonObject{
+				{ "@type", "setLogVerbosityLevel" },
+				{ "new_verbosity_level", level },
+			}).toJson(QJsonDocument::Compact);
+			td_execute(request.constData());
+		}
+
+		const auto accountSpecs = socketAccountsVar.split(',', Qt::SkipEmptyParts);
+		// Place socket in $XDG_RUNTIME_DIR per XDG Base Directory spec.
+		// If XDG_RUNTIME_DIR is not set, fall back to /tmp with a
+		// user-specific directory (0700 permissions) and warn.
+		auto runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
+		if (runtimeDir.isEmpty()) {
+			LOG(("Control Server WARNING: XDG_RUNTIME_DIR is not set. "
+				"Falling back to a replacement directory in /tmp."));
+			runtimeDir = u"/tmp/tdesktop-%1"_q
+				.arg(uint(getuid()));
+			QDir().mkpath(runtimeDir);
+			QFile::setPermissions(
+				runtimeDir,
+				QFileDevice::ReadOwner
+					| QFileDevice::WriteOwner
+					| QFileDevice::ExeOwner);
+		}
+		const auto socketPath = runtimeDir + u"/tdesktop.sock"_q;
+		_controlServer = std::make_unique<TdBridge::ControlServer>(
+			socketPath,
+			accountSpecs);
+		if (!_controlServer->start()) {
+			LOG(("Control Server: Failed to start on %1").arg(socketPath));
+		} else {
+			LOG(("Control Server: Listening on %1").arg(socketPath));
+		}
+		_controlServer->setDomain(_domain.get());
+
+		// Set up per-account TDLib clients once the domain is started.
+		setupTdLibAccounts();
+	}
 
 	startTray();
 
@@ -2082,7 +2094,9 @@ void Application::addTdLibAccount(
 		accountInfo.phone = user->phone();
 		accountInfo.userId = session->userId().bare;
 	}
-	_controlServer->addAccountClient(index, clientId, accountInfo);
+	if (_controlServer) {
+		_controlServer->addAccountClient(index, clientId, accountInfo);
+	}
 
 	// Update account info when session appears or changes.
 	account->sessionValue(
@@ -2097,7 +2111,9 @@ void Application::addTdLibAccount(
 		ai.username = user->username();
 		ai.phone = user->phone();
 		ai.userId = session->userId().bare;
-		_controlServer->updateAccountInfo(idx, ai);
+		if (_controlServer) {
+			_controlServer->updateAccountInfo(idx, ai);
+		}
 	}, info.mtpLifetime);
 
 	// Subscribe to MTP instance changes for this account.
@@ -2143,7 +2159,9 @@ void Application::removeTdLibAccount(int index) {
 	}
 
 	const auto clientId = it->second.tdlibClientId;
-	_controlServer->removeAccountClient(index);
+	if (_controlServer) {
+		_controlServer->removeAccountClient(index);
+	}
 	_tdlibBridge->removeClient(clientId);
 
 	// Send close to clean up the TDLib client.

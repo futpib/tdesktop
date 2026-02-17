@@ -239,9 +239,13 @@ QJsonObject ExportStateToJson(
 
 } // namespace
 
-ControlServer::ControlServer(const QString &socketPath, QObject *parent)
+ControlServer::ControlServer(
+		const QString &socketPath,
+		const QStringList &allowedAccountSpecs,
+		QObject *parent)
 : QObject(parent)
-, _socketPath(socketPath) {
+, _socketPath(socketPath)
+, _allowedAccountSpecs(allowedAccountSpecs) {
 	connect(&_server, &QLocalServer::newConnection,
 		this, &ControlServer::onNewConnection);
 
@@ -285,6 +289,36 @@ void ControlServer::setDomain(not_null<Main::Domain*> domain) {
 	_domain = domain;
 }
 
+bool ControlServer::isAccountAllowed(int accountIndex) const {
+	for (const auto &spec : _allowedAccountSpecs) {
+		if (spec == u"*"_q) {
+			return true;
+		}
+		bool ok = false;
+		if (spec.toInt(&ok) == accountIndex && ok) {
+			return true;
+		}
+		auto it = _accounts.find(accountIndex);
+		if (it != _accounts.end()
+			&& !it->second.info.username.isEmpty()
+			&& it->second.info.username.compare(
+				spec, Qt::CaseInsensitive) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void ControlServer::recomputeDefaultAccount() {
+	for (const auto &[accountIndex, entry] : _accounts) {
+		if (isAccountAllowed(accountIndex)) {
+			_defaultAccount = accountIndex;
+			return;
+		}
+	}
+	_defaultAccount = 0;
+}
+
 void ControlServer::addAccountClient(
 		int accountIndex,
 		int tdlibClientId) {
@@ -297,6 +331,7 @@ void ControlServer::addAccountClient(
 		const AccountInfo &info) {
 	_accounts[accountIndex] = AccountEntry{ tdlibClientId, info };
 	_clientIdToAccount[tdlibClientId] = accountIndex;
+	recomputeDefaultAccount();
 }
 
 void ControlServer::updateAccountInfo(
@@ -305,6 +340,7 @@ void ControlServer::updateAccountInfo(
 	auto it = _accounts.find(accountIndex);
 	if (it != _accounts.end()) {
 		it->second.info = info;
+		recomputeDefaultAccount();
 	}
 }
 
@@ -315,6 +351,7 @@ void ControlServer::removeAccountClient(int accountIndex) {
 		_accounts.erase(it);
 	}
 	_activeExports.erase(accountIndex);
+	recomputeDefaultAccount();
 }
 
 void ControlServer::onNewConnection() {
@@ -367,6 +404,51 @@ void ControlServer::processLine(
 	auto obj = doc.object();
 	const auto type = obj.value("type").toString();
 
+	// Resolve account index and enforce access control.
+	// For tdlib/mtp the account is at the top level; for tdesktop
+	// export commands it's inside the payload. Account-less tdesktop
+	// commands (ping, listAccounts) skip this check.
+	auto accountIndex = _defaultAccount;
+	auto needsAccountCheck = false;
+
+	if (type == u"tdlib"_q || type == u"mtp"_q) {
+		needsAccountCheck = true;
+		if (obj.contains("account")) {
+			accountIndex = obj.value("account").toInt(_defaultAccount);
+		} else {
+			obj["account"] = _defaultAccount;
+		}
+	} else if (type == u"tdesktop"_q) {
+		const auto payload = obj.value("payload").toObject();
+		const auto command = payload.value("command").toString();
+		if (command == u"export"_q || command == u"cancelExport"_q) {
+			needsAccountCheck = true;
+			accountIndex = payload.value("account").toInt(_defaultAccount);
+		}
+	}
+
+	if (needsAccountCheck && !isAccountAllowed(accountIndex)) {
+		const auto errorPayload = QJsonObject{
+			{ "@type", "error" },
+			{ "code", 403 },
+			{ "message",
+				u"Account %1 not allowed"_q.arg(accountIndex) },
+		};
+		if (type == u"tdesktop"_q) {
+			sendJson(socket, QJsonObject{
+				{ "type", "tdesktop" },
+				{ "payload", errorPayload },
+			});
+		} else {
+			sendJson(socket, QJsonObject{
+				{ "type", type },
+				{ "account", accountIndex },
+				{ "payload", errorPayload },
+			});
+		}
+		return;
+	}
+
 	if (type == u"tdlib"_q) {
 		handleTdLibRequest(socket, obj);
 	} else if (type == u"tdesktop"_q) {
@@ -393,11 +475,14 @@ void ControlServer::handleTdLibRequest(
 	auto it = _accounts.find(accountIndex);
 	if (it == _accounts.end()) {
 		sendJson(socket, QJsonObject{
-			{ "type", "error" },
+			{ "type", "tdlib" },
 			{ "account", accountIndex },
-			{ "code", 404 },
-			{ "message",
-				u"No TDLib client for account %1"_q.arg(accountIndex) },
+			{ "payload", QJsonObject{
+				{ "@type", "error" },
+				{ "code", 404 },
+				{ "message",
+					u"No TDLib client for account %1"_q.arg(accountIndex) },
+			}},
 		});
 		return;
 	}
@@ -701,6 +786,9 @@ void ControlServer::handleControlRequest(
 	} else if (command == u"listAccounts"_q) {
 		auto accounts = QJsonArray();
 		for (const auto &[accountIndex, entry] : _accounts) {
+			if (!isAccountAllowed(accountIndex)) {
+				continue;
+			}
 			auto obj = QJsonObject{
 				{ "index", accountIndex },
 			};

@@ -43,6 +43,7 @@ class ControlServer final : public QObject {
 
 public:
 	explicit ControlServer(const QString &socketPath,
+		const QStringList &allowedAccountSpecs,
 		QObject *parent = nullptr);
 	~ControlServer();
 
@@ -85,7 +86,12 @@ private:
 	void sendJson(QLocalSocket *socket, const QJsonObject &obj);
 	void broadcastJson(const QJsonObject &obj);
 
+	bool isAccountAllowed(int accountIndex) const;
+	void recomputeDefaultAccount();
+
 	QString _socketPath;
+	QStringList _allowedAccountSpecs;
+	int _defaultAccount = 0;
 	QLocalServer _server;
 	QTimer _pollTimer;
 
