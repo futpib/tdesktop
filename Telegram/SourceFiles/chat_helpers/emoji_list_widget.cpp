@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_media_preview.h"
 #include "api/api_peer_photo.h"
 #include "apiwrap.h"
+#include "base/debug_log.h"
 #include "base/unixtime.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/controls/tabbed_search.h"
@@ -2292,6 +2293,7 @@ void EmojiListWidget::refreshRecent() {
 }
 
 void EmojiListWidget::refreshCustom() {
+	PROFILE_LOG(("refreshCustom: entered, mode=%1").arg(int(_mode)));
 	if (_mode == Mode::RecentReactions || _mode == Mode::MessageEffects) {
 		return;
 	}
@@ -2363,6 +2365,8 @@ void EmojiListWidget::refreshCustom() {
 			if (premium && onlyUnicodeEmoji) {
 				return;
 			} else if (valid) {
+				PROFILE_LOG(("refreshCustom: reusing old set %1 (%2 emojis)"
+					).arg(setId).arg(int(list.size())));
 				i->thumbnailDocument = it->second->lookupThumbnailDocument();
 				const auto premiumRequired = premium && premiumMayBeBought;
 				if (i->canRemove != canRemove
@@ -2380,6 +2384,8 @@ void EmojiListWidget::refreshCustom() {
 		}
 		auto set = std::vector<CustomOne>();
 		set.reserve(list.size());
+		const auto resolveStart = crl::profile();
+		auto resolveCount = 0;
 		for (const auto document : list) {
 			const auto id = EmojiStatusId{ document->id };
 			if (_restrictedCustomList.contains(id.documentId)) {
@@ -2390,10 +2396,16 @@ void EmojiListWidget::refreshCustom() {
 					.document = document,
 					.emoji = Ui::Emoji::Find(sticker->alt),
 				});
+				++resolveCount;
 				if (!premium && !megagroup && document->isPremiumEmoji()) {
 					premium = true;
 				}
 			}
+		}
+		const auto resolveElapsed = crl::profile() - resolveStart;
+		if (resolveElapsed > 1000) {
+			PROFILE_LOG(("refreshCustom: push setId=%1 resolved %2 emojis in %3us"
+				).arg(setId).arg(resolveCount).arg(resolveElapsed));
 		}
 		if (premium && onlyUnicodeEmoji) {
 			return;
@@ -2410,12 +2422,15 @@ void EmojiListWidget::refreshCustom() {
 	};
 	refreshEmojiStatusCollectibles();
 	refreshMegagroupStickers(push, GroupStickersPlace::Visible);
+	PROFILE_LOG(("refreshCustom: before installed sets loop"));
 	for (const auto setId : owner->stickers().emojiSetsOrder()) {
 		push(setId, true);
 	}
+	PROFILE_LOG(("refreshCustom: after installed sets loop, before featured sets loop"));
 	for (const auto setId : owner->stickers().featuredEmojiSetsOrder()) {
 		push(setId, false);
 	}
+	PROFILE_LOG(("refreshCustom: after featured sets loop"));
 	refreshMegagroupStickers(push, GroupStickersPlace::Hidden);
 
 	_footer->refreshIcons(
@@ -2423,6 +2438,7 @@ void EmojiListWidget::refreshCustom() {
 		currentSet(getVisibleTop()),
 		nullptr,
 		ValidateIconAnimations::None);
+	PROFILE_LOG(("refreshCustom: done"));
 	update();
 }
 

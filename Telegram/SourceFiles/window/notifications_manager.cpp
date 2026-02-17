@@ -207,10 +207,13 @@ System::System()
 }
 
 void System::createManager() {
+	PROFILE_LOG(("Startup: Before Platform::Notifications::Create()"));
 	Platform::Notifications::Create(this);
+	PROFILE_LOG(("Startup: After Platform::Notifications::Create()"));
 }
 
 void System::setManager(Fn<std::unique_ptr<Manager>()> create) {
+	PROFILE_LOG(("Startup: Notifications::setManager called"));
 	Expects(_manager != nullptr);
 	const auto oldManager = _manager.get();
 	const auto guard = gsl::finally([&] {

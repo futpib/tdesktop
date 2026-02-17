@@ -165,6 +165,7 @@ Session::Session(
 , _saveSettingsTimer([=] { saveSettings(); }) {
 	Expects(_settings != nullptr);
 
+	PROFILE_LOG(("Startup: Session constructor body begin"));
 	_api->requestTermsUpdate();
 	_api->requestFullPeer(_user);
 
@@ -182,6 +183,7 @@ Session::Session(
 	}, lifetime());
 
 	crl::on_main(this, [=] {
+		PROFILE_LOG(("Startup: Session::crl::on_main callback started"));
 		using Flag = Data::PeerUpdate::Flag;
 		changes().peerUpdates(
 			_user,
@@ -213,24 +215,40 @@ Session::Session(
 
 		// Storage::Account uses Main::Account::session() in those methods.
 		// So they can't be called during Main::Session construction.
+		PROFILE_LOG(("Startup: Before readInstalledStickers"));
 		local().readInstalledStickers();
+		PROFILE_LOG(("Startup: Before readInstalledMasks"));
 		local().readInstalledMasks();
+		PROFILE_LOG(("Startup: Before readInstalledCustomEmoji"));
 		local().readInstalledCustomEmoji();
+		PROFILE_LOG(("Startup: Before readFeaturedStickers"));
 		local().readFeaturedStickers();
+		PROFILE_LOG(("Startup: Before readFeaturedCustomEmoji"));
 		local().readFeaturedCustomEmoji();
+		PROFILE_LOG(("Startup: Before readRecentStickers"));
 		local().readRecentStickers();
+		PROFILE_LOG(("Startup: After readRecentStickers"));
 		local().readRecentMasks();
+		PROFILE_LOG(("Startup: After readRecentMasks"));
 		local().readFavedStickers();
+		PROFILE_LOG(("Startup: After readFavedStickers"));
 		local().readSavedGifs();
+		PROFILE_LOG(("Startup: After readSavedGifs"));
 		data().stickers().notifyUpdated(Data::StickersType::Stickers);
+		PROFILE_LOG(("Startup: After notifyUpdated(Stickers)"));
 		data().stickers().notifyUpdated(Data::StickersType::Masks);
-		data().stickers().notifyUpdated(Data::StickersType::Emoji);
+		PROFILE_LOG(("Startup: After notifyUpdated(Masks)"));
+		//data().stickers().notifyUpdated(Data::StickersType::Emoji); // COMMENTED OUT to test startup speed
+		PROFILE_LOG(("Startup: After notifyUpdated(Emoji) [SKIPPED]"));
 		data().stickers().notifySavedGifsUpdated();
+		PROFILE_LOG(("Startup: Session::crl::on_main callback finished"));
 		DEBUG_LOG(("Init: Account stored data load finished."));
 	});
 
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
+	PROFILE_LOG(("Startup: Before Spellchecker::Start"));
 	Spellchecker::Start(this);
+	PROFILE_LOG(("Startup: After Spellchecker::Start"));
 #endif // TDESKTOP_DISABLE_SPELLCHECK
 
 	_api->requestNotifySettings(MTP_inputNotifyUsers());

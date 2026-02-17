@@ -61,14 +61,18 @@ std::vector<std::string> CurrentCapabilities;
 }
 
 std::optional<base::Platform::DBus::ServiceWatcher> CreateServiceWatcher() {
+	PROFILE_LOG(("Startup: CreateServiceWatcher - before bus_get_sync"));
 	auto connection = Gio::bus_get_sync(Gio::BusType::SESSION_, nullptr);
+	PROFILE_LOG(("Startup: CreateServiceWatcher - bus_get_sync done"));
 	if (!connection) {
 		return {};
 	}
 
 	const auto activatable = [&] {
+		PROFILE_LOG(("Startup: CreateServiceWatcher - before ListActivatableNames"));
 		const auto names = base::Platform::DBus::ListActivatableNames(
 			connection.gobj_());
+		PROFILE_LOG(("Startup: CreateServiceWatcher - ListActivatableNames done"));
 
 		if (!names) {
 			// avoid service restart loop in sandboxed environments
@@ -237,7 +241,9 @@ bool VolumeSupported() {
 }
 
 void Create(Window::Notifications::System *system) {
+	PROFILE_LOG(("Startup: Notifications::Create - before ServiceWatcher"));
 	static const auto ServiceWatcher = CreateServiceWatcher();
+	PROFILE_LOG(("Startup: Notifications::Create - ServiceWatcher created"));
 
 	const auto managerSetter = [=](
 			XdgNotifications::NotificationsProxy proxy) {
@@ -335,6 +341,7 @@ Manager::Private::Private(not_null<Manager*> manager)
 		? Gio::Application::get_default()
 		: nullptr)
 , _sounds(cWorkingDir() + u"tdata/audio_cache"_q) {
+	PROFILE_LOG(("Startup: Notifications Manager::Private constructed"));
 	const auto &serverInformation = CurrentServerInformation;
 
 	if (!serverInformation.name.empty()) {

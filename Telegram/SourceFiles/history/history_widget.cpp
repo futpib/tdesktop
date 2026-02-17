@@ -312,6 +312,7 @@ HistoryWidget::HistoryWidget(
 		return _list && _list->itemTop(view) >= 0;
 	}))
 , _topShadow(this) {
+	PROFILE_LOG(("Startup: HistoryWidget constructor body begin"));
 	setAcceptDrops(true);
 
 	session().downloaderTaskFinished() | rpl::on_next([=] {

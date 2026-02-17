@@ -420,6 +420,7 @@ TabbedSelector::TabbedSelector(
 , _hasGifsTab(ranges::contains(_tabs, SelectorTab::Gifs, &Tab::type))
 , _hasMasksTab(ranges::contains(_tabs, SelectorTab::Masks, &Tab::type))
 , _tabbed(_tabs.size() > 1) {
+	PROFILE_LOG(("Startup: TabbedSelector constructor body begin"));
 	resize(st::emojiPanWidth, st::emojiPanMaxHeight);
 
 	for (auto &tab : _tabs) {

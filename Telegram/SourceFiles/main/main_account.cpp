@@ -76,14 +76,17 @@ std::unique_ptr<MTP::Config> Account::prepareToStart(
 }
 
 void Account::start(std::unique_ptr<MTP::Config> config) {
+	PROFILE_LOG(("Startup: Account::start() begin"));
 	_appConfig = std::make_unique<AppConfig>(this);
 	startMtp(config
 		? std::move(config)
 		: std::make_unique<MTP::Config>(
 			Core::App().fallbackProductionConfig()));
+	PROFILE_LOG(("Startup: Account::start() MTP started"));
 	_appConfig->start();
 	watchProxyChanges();
 	watchSessionChanges();
+	PROFILE_LOG(("Startup: Account::start() done"));
 }
 
 void Account::prepareToStartAdded(
@@ -415,6 +418,7 @@ void Account::setMtpAuthorization(const QByteArray &serialized) {
 void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 	Expects(!_mtp);
 
+	PROFILE_LOG(("Startup: Account::startMtp() begin"));
 	auto fields = base::take(_mtpFields);
 	fields.config = std::move(config);
 	fields.deviceModel = Platform::DeviceModelPretty();
@@ -422,6 +426,7 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 	_mtp = std::make_unique<MTP::Instance>(
 		MTP::Instance::Mode::Normal,
 		std::move(fields));
+	PROFILE_LOG(("Startup: MTP::Instance created"));
 
 	const auto writingKeys = _mtp->lifetime().make_state<bool>(false);
 	_mtp->writeKeysRequests(
@@ -477,6 +482,7 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 	}
 
 	if (_sessionUserId) {
+		PROFILE_LOG(("Startup: Before Account::createSession()"));
 		createSession(
 			_sessionUserId,
 			base::take(_sessionUserSerialized),
@@ -484,6 +490,7 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 			(_storedSessionSettings
 				? std::move(_storedSessionSettings)
 				: std::make_unique<SessionSettings>()));
+		PROFILE_LOG(("Startup: After Account::createSession()"));
 	}
 	_storedSessionSettings = nullptr;
 

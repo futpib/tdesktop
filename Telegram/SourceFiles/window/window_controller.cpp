@@ -176,17 +176,22 @@ void Controller::showAccount(
 
 	_id.account->sessionValue(
 	) | rpl::on_next([=](Main::Session *session) {
+		PROFILE_LOG(("Startup: showAccount sessionValue callback begin"));
 		const auto was = base::take(_sessionController);
 		_sessionController = session
 			? std::make_unique<SessionController>(session, this)
 			: nullptr;
 		_sessionControllerValue = _sessionController.get();
+		PROFILE_LOG(("Startup: SessionController created"));
 
 		auto oldContentCache = _widget.grabForSlideAnimation();
 		_widget.updateWindowIcon();
 		if (session) {
+			PROFILE_LOG(("Startup: Before setupSideBar"));
 			setupSideBar();
+			PROFILE_LOG(("Startup: Before setupMain"));
 			setupMain(singlePeerShowAtMsgId, std::move(oldContentCache));
+			PROFILE_LOG(("Startup: After setupMain"));
 
 			session->updates().isIdleValue(
 			) | rpl::filter([=](bool idle) {

@@ -171,9 +171,11 @@ Application::Application()
 , _tray(std::make_unique<Tray>())
 , _setupEmailLock(false)
 , _autoLockTimer([=] { checkAutoLock(); }) {
+	PROFILE_LOG(("Startup: Application members constructed"));
 	Ui::Integration::Set(&_private->uiIntegration);
 
 	_platformIntegration->init();
+	PROFILE_LOG(("Startup: Platform integration initialized"));
 
 	passcodeLockChanges(
 	) | rpl::on_next([=](bool locked) {
@@ -256,14 +258,19 @@ Application::~Application() {
 }
 
 void Application::run() {
+	PROFILE_LOG(("Startup: Application::run() entered"));
+
 	// Depends on OpenSSL on macOS, so on ThirdParty::start().
 	// Depends on notifications settings.
 	_notifications = std::make_unique<Window::Notifications::System>();
+	PROFILE_LOG(("Startup: Notifications system created"));
 
 	startLocalStorage();
+	PROFILE_LOG(("Startup: Local storage started"));
 
 	style::SetCustomFont(settings().customFontFamily());
 	style::internal::StartFonts();
+	PROFILE_LOG(("Startup: Fonts started"));
 
 	ValidateScale();
 
@@ -288,19 +295,24 @@ void Application::run() {
 	QCoreApplication::instance()->installTranslator(_translator.get());
 
 	style::StartManager(cScale());
+	PROFILE_LOG(("Startup: Style manager started"));
 	Ui::Accessible::Init();
 	Ui::InitTextOptions();
 	Ui::StartCachedCorners();
 	Ui::Emoji::Init();
+	PROFILE_LOG(("Startup: Emoji initialized"));
 	Ui::PreloadTextSpoilerMask();
 	startShortcuts();
 	startEmojiImageLoader();
 	startSystemDarkModeViewer();
 	Media::Player::start(_audio.get());
+	PROFILE_LOG(("Startup: Media player started"));
 
+	PROFILE_LOG(("Startup: Before MediaControlsManager::Supported()"));
 	if (MediaControlsManager::Supported()) {
 		_mediaControlsManager = std::make_unique<MediaControlsManager>();
 	}
+	PROFILE_LOG(("Startup: After MediaControlsManager check"));
 
 	rpl::combine(
 		_batterySaving->value(),
@@ -324,12 +336,17 @@ void Application::run() {
 
 	// Create mime database, so it won't be slow later.
 	QMimeDatabase().mimeTypeForName(u"text/plain"_q);
+	PROFILE_LOG(("Startup: MIME database primed"));
 
 	// Check now to avoid re-entrance later.
+	PROFILE_LOG(("Startup: Before CachedWebviewAvailability()"));
 	[[maybe_unused]] const auto &webviewAvailability
 		= Core::CachedWebviewAvailability();
+	PROFILE_LOG(("Startup: After CachedWebviewAvailability()"));
 
+	PROFILE_LOG(("Startup: Before Window::Controller creation"));
 	_windows.emplace(nullptr, std::make_unique<Window::Controller>());
+	PROFILE_LOG(("Startup: Window::Controller created"));
 	setLastActiveWindow(_windows.front().second.get());
 	_windowInSettings = _lastActivePrimaryWindow = _lastActiveWindow;
 
@@ -376,15 +393,29 @@ void Application::run() {
 
 	DEBUG_LOG(("Application Info: window created..."));
 
+	PROFILE_LOG(("Startup: Before startDomain()"));
 	startDomain();
+	PROFILE_LOG(("Startup: Domain started"));
 	startTray();
+	PROFILE_LOG(("Startup: Tray started"));
 
+	PROFILE_LOG(("Startup: Before firstShow()"));
 	_lastActivePrimaryWindow->firstShow();
+	PROFILE_LOG(("Startup: firstShow() done - WINDOW VISIBLE"));
 
 	startMediaView();
+	PROFILE_LOG(("Startup: Media view started"));
 
 	DEBUG_LOG(("Application Info: showing."));
 	_lastActivePrimaryWindow->finishFirstShow();
+	PROFILE_LOG(("Startup: finishFirstShow() done"));
+
+	crl::on_main(this, [=] {
+		PROFILE_LOG(("Startup: First crl::on_main callback after run()"));
+	});
+	QMetaObject::invokeMethod(this, [=] {
+		PROFILE_LOG(("Startup: First QMetaObject::invokeMethod callback after run()"));
+	}, Qt::QueuedConnection);
 
 	if (!_lastActivePrimaryWindow->locked() && cStartToSettings()) {
 		_lastActivePrimaryWindow->showSettings();
@@ -425,6 +456,7 @@ void Application::autoRegisterUrlScheme() {
 }
 
 void Application::showAccount(not_null<Main::Account*> account) {
+	PROFILE_LOG(("Startup: showAccount() called"));
 	if (const auto separate = separateWindowFor(account)) {
 		_lastActivePrimaryWindow = separate;
 		separate->activate();
@@ -472,10 +504,14 @@ void Application::showOpenGLCrashNotification() {
 }
 
 void Application::startDomain() {
+	PROFILE_LOG(("Startup: Before _domain->start()"));
 	const auto state = _domain->start(QByteArray());
+	PROFILE_LOG(("Startup: _domain->start() done"));
 	if (state != Storage::StartResult::IncorrectPasscodeLegacy) {
 		// In case of non-legacy passcoded app all global settings are ready.
+		PROFILE_LOG(("Startup: Before startSettingsAndBackground()"));
 		startSettingsAndBackground();
+		PROFILE_LOG(("Startup: startSettingsAndBackground() done"));
 	}
 	if (state != Storage::StartResult::Success) {
 		lockByPasscode();
@@ -819,8 +855,11 @@ void Application::badMtprotoConfigurationError() {
 }
 
 void Application::startLocalStorage() {
+	PROFILE_LOG(("Startup: Before GL crash detection"));
 	Ui::GL::DetectLastCheckCrash();
+	PROFILE_LOG(("Startup: Before Local::start()"));
 	Local::start();
+	PROFILE_LOG(("Startup: Local::start() done"));
 	_saveSettingsTimer.emplace([=] { saveSettings(); });
 	settings().saveDelayedRequests() | rpl::on_next([=] {
 		saveSettingsDelayed();

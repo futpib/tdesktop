@@ -30,6 +30,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/ui_utility.h"
 #include "ui/effects/animations.h"
 
+#include <crl/common/crl_common_list.h>
+
 #include <QtCore/QLockFile>
 #include <QtGui/QSessionManager>
 #include <QtGui/QScreen>
@@ -57,6 +59,15 @@ Sandbox::Sandbox(int &argc, char **argv)
 }
 
 int Sandbox::start() {
+	crl::details::list::SlowCallbackReporter = [](
+			crl::profile_time started,
+			int index,
+			crl::profile_time elapsed) {
+		LOG(("[%1] Slow crl::on_main callback #%2: %3us"
+			).arg(started / 1000., 0, 'f', 3
+			).arg(index
+			).arg(elapsed));
+	};
 	if (!Core::UpdaterDisabled()) {
 		_updateChecker = std::make_unique<Core::UpdateChecker>();
 	}
@@ -134,6 +145,7 @@ int Sandbox::start() {
 		manager.setRestartHint(QSessionManager::RestartNever);
 	});
 
+	PROFILE_LOG(("Startup: Before single-instance check"));
 	LOG(("Connecting local socket to %1...").arg(_localServerName));
 	_localSocket.connectToServer(_localServerName);
 
@@ -160,14 +172,18 @@ void Sandbox::launchApplication() {
 		} else if (_application) {
 			return;
 		}
+		PROFILE_LOG(("Startup: Before setupScreenScale()"));
 		setupScreenScale();
+		PROFILE_LOG(("Startup: Screen scale set up"));
 
 		if (OptionDeadlockDetector.value()) {
 			using DeadlockDetector::PingThread;
 			_deadlockDetector = std::make_unique<PingThread>(this);
 		}
 
+		PROFILE_LOG(("Startup: Before Application construction"));
 		_application = std::make_unique<Application>();
+		PROFILE_LOG(("Startup: Application constructed"));
 
 		// Ideally this should go to constructor.
 		// But we want to catch all native events and Application installs
@@ -175,7 +191,9 @@ void Sandbox::launchApplication() {
 		// our filter after the Application constructor installs his.
 		installNativeEventFilter(this);
 
+		PROFILE_LOG(("Startup: Before Application::run()"));
 		_application->run();
+		PROFILE_LOG(("Startup: Application::run() finished"));
 	});
 }
 
@@ -338,16 +356,21 @@ void Sandbox::socketError(QLocalSocket::LocalSocketError e) {
 }
 
 void Sandbox::singleInstanceChecked() {
+	PROFILE_LOG(("Startup: Single instance checked"));
 	if (cManyInstance()) {
 		LOG(("App Info: Detected another instance"));
 	}
 
+	PROFILE_LOG(("Startup: Before refreshGlobalProxy()"));
 	refreshGlobalProxy();
+	PROFILE_LOG(("Startup: After refreshGlobalProxy()"));
 	if (!Logs::started() || !Logs::instanceChecked()) {
 		new NotStartedWindow();
 		return;
 	}
+	PROFILE_LOG(("Startup: Before CrashReports::Start()"));
 	const auto result = CrashReports::Start();
+	PROFILE_LOG(("Startup: After CrashReports::Start()"));
 	v::match(result, [&](CrashReports::Status status) {
 		if (status == CrashReports::CantOpen) {
 			new NotStartedWindow();
@@ -557,7 +580,25 @@ bool Sandbox::notify(QObject *receiver, QEvent *e) {
 			return true;
 		}
 	}
-	return notifyOrInvoke(receiver, e);
+	const auto before = crl::profile();
+	const auto result = notifyOrInvoke(receiver, e);
+	const auto elapsed = crl::profile() - before;
+	if (e->type() == QEvent::Paint) {
+		static bool firstPaintLogged = false;
+		if (!firstPaintLogged) {
+			firstPaintLogged = true;
+			PROFILE_LOG(("Startup: >>>>>>>>>> FIRST PAINT EVENT <<<<<<<<<< receiver=%1"
+				).arg(receiver->metaObject()->className()));
+		}
+	}
+	if (elapsed > 10000) { // > 10ms
+		LOG(("[%1] Slow event: type=%2, receiver=%3, elapsed=%4us"
+			).arg(before / 1000., 0, 'f', 3
+			).arg(e->type()
+			).arg(receiver->metaObject()->className()
+			).arg(elapsed));
+	}
+	return result;
 }
 
 void Sandbox::processPostponedCalls(int level) {

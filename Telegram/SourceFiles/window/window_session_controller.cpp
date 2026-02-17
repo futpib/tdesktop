@@ -1679,8 +1679,11 @@ SessionController::SessionController(
 	session->addWindow(this);
 
 	crl::on_main(this, [=] {
+		PROFILE_LOG(("Startup: SessionController crl::on_main: before activateFirstChatsFilter"));
 		activateFirstChatsFilter();
+		PROFILE_LOG(("Startup: SessionController crl::on_main: before setupPremiumToast"));
 		setupPremiumToast();
+		PROFILE_LOG(("Startup: SessionController crl::on_main: done"));
 	});
 
 #if _DEBUG // TEST: Auto-open craft box on startup

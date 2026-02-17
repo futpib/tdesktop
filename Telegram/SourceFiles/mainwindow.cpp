@@ -329,14 +329,18 @@ void MainWindow::setupMain(
 	} else {
 		destroyLayer();
 	}
+	PROFILE_LOG(("Startup: MainWindow::setupMain: before MainWidget creation"));
 	auto created = object_ptr<MainWidget>(bodyWidget(), sessionController());
+	PROFILE_LOG(("Startup: MainWindow::setupMain: MainWidget created"));
 	clearWidgets();
 	_main = std::move(created);
 	updateControlsGeometry();
 	Ui::SendPendingMoveResizeEvents(_main);
+	PROFILE_LOG(("Startup: MainWindow::setupMain: before showByInitialId"));
 	_main->controller()->showByInitialId(
 		Window::SectionShow::Way::ClearStack,
 		singlePeerShowAtMsgId);
+	PROFILE_LOG(("Startup: MainWindow::setupMain: after showByInitialId"));
 	if (_passcodeLock || _setupEmailLock) {
 		_main->hide();
 	} else {

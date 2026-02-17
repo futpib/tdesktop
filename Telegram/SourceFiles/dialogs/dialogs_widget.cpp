@@ -374,6 +374,7 @@ Widget::Widget(
 , _searchTimer([=] { search(); })
 , _peerSearch(&controller->session(), Api::PeerSearch::Type::WithSponsored)
 , _singleMessageSearch(&controller->session()) {
+	PROFILE_LOG(("Startup: Dialogs::Widget constructor body begin"));
 	const auto makeChildListShown = [](PeerId peerId, float64 shown) {
 		return InnerWidget::ChildListShown{ peerId, shown };
 	};
@@ -722,6 +723,7 @@ Widget::Widget(
 
 	setupFrozenAccountBar();
 	setupTopBarSuggestions(innerList);
+	PROFILE_LOG(("Startup: Dialogs::Widget constructor done"));
 }
 
 void Widget::setupSwipeBack() {

@@ -37,7 +37,9 @@ Domain::Domain(const QString &dataName)
 		Core::App().startSettingsAndBackground();
 
 		crl::on_main(this, [=] {
+			PROFILE_LOG(("Startup: Before notifications().createManager() [crl::on_main]"));
 			Core::App().notifications().createManager();
+			PROFILE_LOG(("Startup: After notifications().createManager() [crl::on_main]"));
 		});
 	}, _lifetime);
 
@@ -66,9 +68,13 @@ bool Domain::started() const {
 Storage::StartResult Domain::start(const QByteArray &passcode) {
 	Expects(!started());
 
+	PROFILE_LOG(("Startup: Domain::start() begin"));
 	const auto result = _local->start(passcode);
+	PROFILE_LOG(("Startup: Domain::start() local started"));
 	if (result == Storage::StartResult::Success) {
+		PROFILE_LOG(("Startup: Domain::start() before activateAfterStarting"));
 		activateAfterStarting();
+		PROFILE_LOG(("Startup: Domain::start() after activateAfterStarting"));
 		crl::on_main(&Core::App(), [=] { suggestExportIfNeeded(); });
 	} else {
 		Assert(!started());
@@ -133,10 +139,13 @@ void Domain::activateAfterStarting() {
 		if (index == _accountToActivate) {
 			toActivate = account.get();
 		}
+		PROFILE_LOG(("Startup: Domain watchSession for account %1").arg(index));
 		watchSession(account.get());
 	}
 
+	PROFILE_LOG(("Startup: Domain before activate()"));
 	activate(toActivate);
+	PROFILE_LOG(("Startup: Domain after activate()"));
 	removePasscodeIfEmpty();
 }
 

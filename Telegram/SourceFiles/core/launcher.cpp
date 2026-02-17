@@ -386,6 +386,7 @@ int Launcher::exec() {
 
 	// Must be started before Platform is started.
 	Logs::start();
+	PROFILE_LOG(("Startup: Logs started"));
 	base::options::init(cWorkingDir() + "tdata/experimental_options.json");
 
 	// Must be called after options are inited.
@@ -409,8 +410,11 @@ int Launcher::exec() {
 	}
 
 	// Must be started before Sandbox is created.
+	PROFILE_LOG(("Startup: Before Platform::start()"));
 	Platform::start();
+	PROFILE_LOG(("Startup: Platform started"));
 	ThirdParty::start();
+	PROFILE_LOG(("Startup: ThirdParty started"));
 	auto result = executeApplication();
 
 	DEBUG_LOG(("Telegram finished, result: %1").arg(result));
@@ -626,8 +630,10 @@ void Launcher::processArguments() {
 }
 
 int Launcher::executeApplication() {
+	PROFILE_LOG(("Startup: Before Sandbox construction"));
 	FilteredCommandLineArguments arguments(_argc, _argv);
 	Sandbox sandbox(arguments.count(), arguments.values());
+	PROFILE_LOG(("Startup: Sandbox (QApplication) constructed"));
 	Ui::MainQueueProcessor processor;
 	base::ConcurrentTimerEnvironment environment;
 	return sandbox.start();
