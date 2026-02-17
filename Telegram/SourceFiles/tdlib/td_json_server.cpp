@@ -597,12 +597,7 @@ void ControlServer::handleMtpRequest(
 				auto resp = QJsonObject{
 					{ "type", "mtp" },
 					{ "account", accountIndex },
-					{ "payload", QJsonObject{
-						{ "@type",
-							constructorId == kBoolTrue
-								? "boolTrue"
-								: "boolFalse" },
-					}},
+					{ "payload", constructorId == kBoolTrue },
 				};
 				if (!extraCopy.isUndefined()) {
 					resp["@extra"] = extraCopy;
