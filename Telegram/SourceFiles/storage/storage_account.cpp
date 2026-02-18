@@ -546,6 +546,7 @@ Account::ReadMapResult Account::readMapWith(
 	_oldMapVersion = mapData.version;
 	_webviewStorageIdBots.token = webviewStorageTokenBots;
 	_webviewStorageIdOther.token = webviewStorageTokenOther;
+	PROFILE_LOG(("Startup: readMapWith map parsed"));
 
 	if (_oldMapVersion < AppVersion) {
 		writeMapDelayed();
@@ -553,12 +554,15 @@ Account::ReadMapResult Account::readMapWith(
 		_mapChanged = false;
 	}
 
+	PROFILE_LOG(("Startup: readMapWith before readPrefs"));
 	if (_prefsKey) {
 		readPrefs();
 	}
+	PROFILE_LOG(("Startup: readMapWith after readPrefs"));
 	if (_locationsKey) {
 		readLocations();
 	}
+	PROFILE_LOG(("Startup: readMapWith after readLocations"));
 	if (_legacyBackgroundKeyDay || _legacyBackgroundKeyNight) {
 		Local::moveLegacyBackground(
 			_basePath,
@@ -568,7 +572,9 @@ Account::ReadMapResult Account::readMapWith(
 	}
 
 	auto stored = readSessionSettings();
+	PROFILE_LOG(("Startup: readMapWith after readSessionSettings"));
 	readMtpData();
+	PROFILE_LOG(("Startup: readMapWith after readMtpData"));
 
 	DEBUG_LOG(("selfSerialized set: %1").arg(selfSerialized.size()));
 	_owner->setSessionFromStorage(
@@ -935,6 +941,7 @@ void Account::writeLocationsDelayed() {
 }
 
 void Account::readLocations() {
+	PROFILE_LOG(("Startup: readLocations before ReadEncryptedFile"));
 	FileReadDescriptor locations;
 	if (!ReadEncryptedFile(locations, _locationsKey, _basePath, _localKey)) {
 		ClearKey(_locationsKey, _basePath);
@@ -942,6 +949,7 @@ void Account::readLocations() {
 		writeMapDelayed();
 		return;
 	}
+	PROFILE_LOG(("Startup: readLocations after ReadEncryptedFile"));
 
 	bool endMarkFound = false;
 	while (!locations.stream.atEnd()) {
@@ -971,6 +979,7 @@ void Account::readLocations() {
 		}
 	}
 
+	PROFILE_LOG(("Startup: readLocations after main loop"));
 	if (endMarkFound) {
 		quint32 cnt;
 		locations.stream >> cnt;

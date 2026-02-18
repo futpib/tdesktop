@@ -115,13 +115,14 @@ void Domain::encryptLocalKey(const QByteArray &passcode) {
 
 Domain::StartModernResult Domain::startModern(
 		const QByteArray &passcode) {
+	PROFILE_LOG(("Startup: startModern begin"));
 	const auto name = ComputeKeyName(_dataName);
 
 	FileReadDescriptor keyData;
 	if (!ReadFile(keyData, name, BaseGlobalPath())) {
 		return StartModernResult::Empty;
 	}
-	LOG(("App Info: reading accounts info..."));
+	PROFILE_LOG(("Startup: startModern after ReadFile"));
 
 	QByteArray salt, keyEncrypted, infoEncrypted;
 	keyData.stream >> salt >> keyEncrypted >> infoEncrypted;
@@ -133,7 +134,9 @@ Domain::StartModernResult Domain::startModern(
 		LOG(("App Error: bad salt in info file, size: %1").arg(salt.size()));
 		return StartModernResult::Failed;
 	}
+	PROFILE_LOG(("Startup: startModern before CreateLocalKey"));
 	_passcodeKey = CreateLocalKey(passcode, salt);
+	PROFILE_LOG(("Startup: startModern after CreateLocalKey"));
 
 	EncryptedDescriptor keyInnerData, info;
 	if (!DecryptLocal(keyInnerData, keyEncrypted, _passcodeKey)) {
@@ -157,6 +160,7 @@ Domain::StartModernResult Domain::startModern(
 		LOG(("App Error: could not decrypt info."));
 		return StartModernResult::Failed;
 	}
+	PROFILE_LOG(("Startup: startModern after decrypt, before account loop"));
 	LOG(("App Info: reading encrypted info..."));
 	auto count = qint32();
 	info.stream >> count;
@@ -180,7 +184,9 @@ Domain::StartModernResult Domain::startModern(
 				_owner,
 				_dataName,
 				index);
+			PROFILE_LOG(("Startup: startModern before prepareToStart account %1").arg(index));
 			auto config = account->prepareToStart(_localKey);
+			PROFILE_LOG(("Startup: startModern after prepareToStart account %1").arg(index));
 			const auto sessionId = account->willHaveSessionUniqueId(
 				config.get());
 			if (!sessions.contains(sessionId)
