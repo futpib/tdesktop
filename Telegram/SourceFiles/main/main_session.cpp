@@ -238,8 +238,8 @@ Session::Session(
 		PROFILE_LOG(("Startup: After notifyUpdated(Stickers)"));
 		data().stickers().notifyUpdated(Data::StickersType::Masks);
 		PROFILE_LOG(("Startup: After notifyUpdated(Masks)"));
-		//data().stickers().notifyUpdated(Data::StickersType::Emoji); // COMMENTED OUT to test startup speed
-		PROFILE_LOG(("Startup: After notifyUpdated(Emoji) [SKIPPED]"));
+		data().stickers().notifyUpdated(Data::StickersType::Emoji);
+		PROFILE_LOG(("Startup: After notifyUpdated(Emoji)"));
 		data().stickers().notifySavedGifsUpdated();
 		PROFILE_LOG(("Startup: Session::crl::on_main callback finished"));
 		DEBUG_LOG(("Init: Account stored data load finished."));
