@@ -312,7 +312,7 @@ HistoryWidget::HistoryWidget(
 		return _list && _list->itemTop(view) >= 0;
 	}))
 , _topShadow(this) {
-	PROFILE_LOG(("Startup: HistoryWidget constructor body begin"));
+	PROFILE_LOG(("Startup: HistoryWidget constructor body begin (after init list)"));
 	setAcceptDrops(true);
 
 	session().downloaderTaskFinished() | rpl::on_next([=] {
@@ -441,7 +441,9 @@ HistoryWidget::HistoryWidget(
 		windowIsVisibleChanged();
 	}, lifetime());
 
+	PROFILE_LOG(("Startup: HistoryWidget before initTabbedSelector"));
 	initTabbedSelector();
+	PROFILE_LOG(("Startup: HistoryWidget after initTabbedSelector"));
 
 	_attachToggle->setClickedCallback([=] {
 		const auto toggle = _attachBotsMenu && _attachBotsMenu->isHidden();
@@ -484,6 +486,7 @@ HistoryWidget::HistoryWidget(
 		updateControlsGeometry();
 	}, lifetime());
 
+	PROFILE_LOG(("Startup: HistoryWidget before InitMessageField"));
 	InitMessageField(controller, _field, [=](
 			not_null<DocumentData*> document) {
 		if (_peer && Data::AllowEmojiWithoutPremium(_peer, document)) {
@@ -492,9 +495,12 @@ HistoryWidget::HistoryWidget(
 		showPremiumToast(document);
 		return false;
 	});
+	PROFILE_LOG(("Startup: HistoryWidget after InitMessageField"));
 	InitMessageFieldFade(_field, st::historyComposeField.textBg);
+	PROFILE_LOG(("Startup: HistoryWidget after InitMessageFieldFade"));
 
 	setupFastButtonMode();
+	PROFILE_LOG(("Startup: HistoryWidget after setupFastButtonMode"));
 
 	_fieldCharsCountManager.limitExceeds(
 	) | rpl::on_next([=] {
@@ -553,7 +559,9 @@ HistoryWidget::HistoryWidget(
 	_muteUnmute->hide();
 	_reportMessages->hide();
 
+	PROFILE_LOG(("Startup: HistoryWidget before initVoiceRecordBar"));
 	initVoiceRecordBar();
+	PROFILE_LOG(("Startup: HistoryWidget after initVoiceRecordBar"));
 
 	_attachToggle->hide();
 	_tabbedSelectorToggle->hide();

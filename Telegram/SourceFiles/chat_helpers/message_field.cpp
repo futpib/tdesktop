@@ -512,20 +512,25 @@ void InitMessageFieldHandlers(MessageFieldHandlersArgs &&args) {
 	}, [paused] {
 		return On(PowerSaving::kChatSpoiler) || paused();
 	});
+	PROFILE_LOG(("Startup: InitMessageFieldHandlers before InstantReplaces"));
 	field->setInstantReplaces(Ui::InstantReplaces::Default());
 	field->setInstantReplacesEnabled(
 		Core::App().settings().replaceEmojiValue());
 	field->setMarkdownReplacesEnabled(rpl::single(Ui::MarkdownEnabledState{
 		Ui::MarkdownEnabled{ std::move(args.allowMarkdownTags) }
 	}));
+	PROFILE_LOG(("Startup: InitMessageFieldHandlers before show block"));
 	if (const auto &show = args.show) {
 		field->setEditLinkCallback(
 			DefaultEditLinkCallback(show, field, args.fieldStyle));
 		field->setEditLanguageCallback(DefaultEditLanguageCallback(show));
+		PROFILE_LOG(("Startup: InitMessageFieldHandlers before InitSpellchecker"));
 		InitSpellchecker(show, field, args.fieldStyle != nullptr);
+		PROFILE_LOG(("Startup: InitMessageFieldHandlers after InitSpellchecker"));
 	}
 	const auto style = field->lifetime().make_state<Ui::ChatStyle>(
 		session->colorIndicesValue());
+	PROFILE_LOG(("Startup: InitMessageFieldHandlers after ChatStyle"));
 	field->setPreCache([=] {
 		return style->messageStyle(false, false).preCache.get();
 	});
