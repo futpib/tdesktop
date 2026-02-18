@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <crl/crl_object_on_thread.h>
 #include <QtCore/QtEndian>
 #include <QtCore/QSaveFile>
+#include "base/debug_log.h"
 
 namespace Storage {
 namespace details {
@@ -626,9 +627,11 @@ bool ReadEncryptedFile(
 		const QString &name,
 		const QString &basePath,
 		const MTP::AuthKeyPtr &key) {
+	const auto readStart = crl::profile();
 	if (!ReadFile(result, name, basePath)) {
 		return false;
 	}
+	const auto afterRead = crl::profile();
 	QByteArray encrypted;
 	result.stream >> encrypted;
 
@@ -653,6 +656,12 @@ bool ReadEncryptedFile(
 	result.buffer.seek(data.buffer.pos());
 	result.stream.setDevice(&result.buffer);
 	result.stream.setVersion(QDataStream::Qt_5_1);
+
+	PROFILE_LOG(("ReadEncryptedFile '%1': readFile=%2us decrypt=%3us dataSize=%4"
+		).arg(name
+		).arg(afterRead - readStart
+		).arg(crl::profile() - afterRead
+		).arg(result.data.size()));
 
 	return true;
 }

@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/stickers/data_stickers.h"
 #include "ui/image/image.h"
 #include "main/main_session.h"
+#include "base/debug_log.h"
 
 namespace Serialize {
 namespace {
@@ -79,6 +80,7 @@ DocumentData *Document::readFromStreamHelper(
 		int streamAppVersion,
 		QDataStream &stream,
 		const StickerSetInfo *info) {
+	const auto totalStart = crl::profile();
 	quint64 id, access;
 	QString name, mime;
 	qint32 date, dc, size, width, height, type, versionTag, version = 0;
@@ -234,7 +236,8 @@ DocumentData *Document::readFromStreamHelper(
 		// size letter ('s' or 'm') is lost, it was not saved in legacy.
 		return nullptr;
 	}
-	return session->data().document(
+	const auto afterParse = crl::profile();
+	const auto result = session->data().document(
 		id,
 		access,
 		fileReference,
@@ -256,6 +259,18 @@ DocumentData *Document::readFromStreamHelper(
 		(isPremiumSticker == 1),
 		dc,
 		int64(uint32(size)));
+
+	static auto totalParse = crl::profile_time(0);
+	static auto totalApply = crl::profile_time(0);
+	static auto totalCount = 0;
+	totalParse += afterParse - totalStart;
+	totalApply += crl::profile() - afterParse;
+	++totalCount;
+	if ((totalCount % 5000) == 0) {
+		PROFILE_LOG(("readFromStreamHelper: %1 docs, streamParse=%2us, dataApply=%3us"
+			).arg(totalCount).arg(totalParse).arg(totalApply));
+	}
+	return result;
 }
 
 DocumentData *Document::readStickerFromStream(

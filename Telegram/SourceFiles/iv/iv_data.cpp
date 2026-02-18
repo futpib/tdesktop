@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "iv/iv_prepare.h"
 #include "core/cached_webview_availability.h"
+#include "base/debug_log.h"
 
 #include <QtCore/QRegularExpression>
 #include <QtCore/QUrl>

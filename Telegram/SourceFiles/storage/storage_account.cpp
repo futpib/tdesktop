@@ -38,6 +38,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "export/export_settings.h"
 #include "webview/webview_interface.h"
 #include "window/themes/window_theme.h"
+#include "base/debug_log.h"
 
 namespace Storage {
 namespace {
@@ -2048,6 +2049,8 @@ void Account::readStickerSets(
 		return;
 	}
 
+	const auto readStart = crl::profile();
+
 	FileReadDescriptor stickers;
 	if (!ReadEncryptedFile(stickers, stickersKey, _basePath, _localKey)) {
 		ClearKey(stickersKey, _basePath);
@@ -2055,6 +2058,9 @@ void Account::readStickerSets(
 		writeMapDelayed();
 		return;
 	}
+
+	PROFILE_LOG(("readStickerSets: ReadEncryptedFile took %1us"
+		).arg(crl::profile() - readStart));
 
 	const auto failed = [&] {
 		ClearKey(stickersKey, _basePath);
@@ -2078,6 +2084,12 @@ void Account::readStickerSets(
 		|| (count > kMaxSavedStickerSetsCount)) {
 		return failed();
 	}
+
+	const auto parseStart = crl::profile();
+	auto totalDocDeserialize = crl::profile_time(0);
+	auto totalDocCount = 0;
+	auto totalSetsEmplace = crl::profile_time(0);
+
 	for (auto i = 0; i != count; ++i) {
 		quint64 setId = 0, setAccessHash = 0, setHash = 0;
 		quint64 setThumbnailDocumentId = 0;
@@ -2144,6 +2156,7 @@ void Account::readStickerSets(
 		if (settingSet) {
 			// We will set this flags from order lists when reading those stickers.
 			setFlags &= ~(SetFlag::Installed | SetFlag::Featured);
+			const auto emplaceStart = crl::profile();
 			it = sets.emplace(setId, std::make_unique<Data::StickersSet>(
 				&_owner->session().data(),
 				setId,
@@ -2154,6 +2167,7 @@ void Account::readStickerSets(
 				0,
 				setFlags,
 				setInstallDate)).first;
+			totalSetsEmplace += crl::profile() - emplaceStart;
 			it->second->thumbnailDocumentId = setThumbnailDocumentId;
 		}
 		const auto set = it->second.get();
@@ -2178,10 +2192,13 @@ void Account::readStickerSets(
 			setShortName);
 		base::flat_set<DocumentId> read;
 		for (int32 j = 0; j < scnt; ++j) {
+			const auto docStart = crl::profile();
 			auto document = Serialize::Document::readStickerFromStream(
 				&_owner->session(),
 				stickers.version,
 				stickers.stream, info);
+			totalDocDeserialize += crl::profile() - docStart;
+			++totalDocCount;
 			if (!CheckStreamStatus(stickers.stream)) {
 				return failed();
 			} else if (!document
@@ -2271,6 +2288,13 @@ void Account::readStickerSets(
 				ImageWithLocation{ .location = setThumbnail }, thumbType);
 		}
 	}
+
+	PROFILE_LOG(("readStickerSets: parsed %1 sets, %2 docs in %3us (docDeserialize=%4us, setsEmplace=%5us)"
+		).arg(count
+		).arg(totalDocCount
+		).arg(crl::profile() - parseStart
+		).arg(totalDocDeserialize
+		).arg(totalSetsEmplace));
 
 	// Read orders of installed and featured stickers.
 	if (outOrder) {
