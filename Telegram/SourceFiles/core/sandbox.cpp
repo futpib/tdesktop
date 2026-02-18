@@ -54,8 +54,9 @@ const char kOptionDeadlockDetector[] = "deadlock-detector";
 bool Sandbox::QuitOnStartRequested = false;
 
 Sandbox::Sandbox(int &argc, char **argv)
-: QApplication(argc, argv)
-, _mainThreadId(QThread::currentThreadId()) {
+: QApplication((fprintf(stderr, "[%.3f] before QApplication base ctor\n", crl::profile() / 1000.0), argc), argv)
+, _mainThreadId((fprintf(stderr, "[%.3f] after QApplication base ctor\n", crl::profile() / 1000.0), QThread::currentThreadId())) {
+	fprintf(stderr, "[%.3f] Sandbox ctor body done\n", crl::profile() / 1000.0);
 }
 
 int Sandbox::start() {
