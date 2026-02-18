@@ -182,6 +182,71 @@ Session::Session(
 		_selfUserpicView = view.cloud;
 	}, lifetime());
 
+	// Storage::Account uses Main::Account::session() in those methods.
+	// So they can't be called during Main::Session construction.
+	// They are deferred via crl::on_main which fires after the
+	// constructor returns and _session is set.
+	//
+	// Steps are chained via InvokeQueued so that paint events
+	// can be processed between heavy file reads.
+	const auto steps = std::make_shared<std::vector<Fn<void()>>>();
+	const auto runNext = std::make_shared<Fn<void()>>();
+	*runNext = crl::guard(this, [=] {
+		if (steps->empty()) {
+			return;
+		}
+		auto step = std::move(steps->front());
+		steps->erase(steps->begin());
+		step();
+		if (!steps->empty()) {
+			InvokeQueued(
+				QCoreApplication::instance(),
+				*runNext);
+		}
+	});
+	steps->push_back([=] {
+		PROFILE_LOG(("Startup: Before readInstalledStickers"));
+		local().readInstalledStickers();
+		PROFILE_LOG(("Startup: After readInstalledStickers"));
+	});
+	steps->push_back([=] {
+		local().readInstalledMasks();
+		PROFILE_LOG(("Startup: After readInstalledMasks"));
+	});
+	steps->push_back([=] {
+		local().readInstalledCustomEmoji();
+		PROFILE_LOG(("Startup: After readInstalledCustomEmoji"));
+	});
+	steps->push_back([=] {
+		data().stickers().notifyUpdated(Data::StickersType::Stickers);
+		data().stickers().notifyUpdated(Data::StickersType::Masks);
+		data().stickers().notifyUpdated(Data::StickersType::Emoji);
+		PROFILE_LOG(("Startup: After notifyUpdated (installed)"));
+	});
+	steps->push_back([=] {
+		local().readFeaturedStickers();
+		PROFILE_LOG(("Startup: After readFeaturedStickers"));
+	});
+	steps->push_back([=] {
+		local().readFeaturedCustomEmoji();
+		PROFILE_LOG(("Startup: After readFeaturedCustomEmoji"));
+	});
+	steps->push_back([=] {
+		local().readRecentStickers();
+		local().readRecentMasks();
+		local().readFavedStickers();
+		local().readSavedGifs();
+		PROFILE_LOG(("Startup: After readRecent/Faved/Gifs"));
+	});
+	steps->push_back([=] {
+		data().stickers().notifyUpdated(Data::StickersType::Stickers);
+		data().stickers().notifyUpdated(Data::StickersType::Masks);
+		data().stickers().notifyUpdated(Data::StickersType::Emoji);
+		data().stickers().notifySavedGifsUpdated();
+		PROFILE_LOG(("Startup: Sticker loading finished"));
+		DEBUG_LOG(("Init: Account stored data load finished."));
+	});
+
 	crl::on_main(this, [=] {
 		PROFILE_LOG(("Startup: Session::crl::on_main callback started"));
 		using Flag = Data::PeerUpdate::Flag;
@@ -213,36 +278,8 @@ Session::Session(
 			saveSettingsDelayed();
 		}
 
-		// Storage::Account uses Main::Account::session() in those methods.
-		// So they can't be called during Main::Session construction.
-		PROFILE_LOG(("Startup: Before readInstalledStickers"));
-		local().readInstalledStickers();
-		PROFILE_LOG(("Startup: Before readInstalledMasks"));
-		local().readInstalledMasks();
-		PROFILE_LOG(("Startup: Before readInstalledCustomEmoji"));
-		local().readInstalledCustomEmoji();
-		PROFILE_LOG(("Startup: Before readFeaturedStickers"));
-		local().readFeaturedStickers();
-		PROFILE_LOG(("Startup: Before readFeaturedCustomEmoji"));
-		local().readFeaturedCustomEmoji();
-		PROFILE_LOG(("Startup: Before readRecentStickers"));
-		local().readRecentStickers();
-		PROFILE_LOG(("Startup: After readRecentStickers"));
-		local().readRecentMasks();
-		PROFILE_LOG(("Startup: After readRecentMasks"));
-		local().readFavedStickers();
-		PROFILE_LOG(("Startup: After readFavedStickers"));
-		local().readSavedGifs();
-		PROFILE_LOG(("Startup: After readSavedGifs"));
-		data().stickers().notifyUpdated(Data::StickersType::Stickers);
-		PROFILE_LOG(("Startup: After notifyUpdated(Stickers)"));
-		data().stickers().notifyUpdated(Data::StickersType::Masks);
-		PROFILE_LOG(("Startup: After notifyUpdated(Masks)"));
-		data().stickers().notifyUpdated(Data::StickersType::Emoji);
-		PROFILE_LOG(("Startup: After notifyUpdated(Emoji)"));
-		data().stickers().notifySavedGifsUpdated();
-		PROFILE_LOG(("Startup: Session::crl::on_main callback finished"));
-		DEBUG_LOG(("Init: Account stored data load finished."));
+		PROFILE_LOG(("Startup: Session::crl::on_main before runNext"));
+		InvokeQueued(QCoreApplication::instance(), *runNext);
 	});
 
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
