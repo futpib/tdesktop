@@ -57,6 +57,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 #include "base/qt/qt_common_adapters.h"
+#include "crl/crl_async.h"
+#include "crl/crl_on_main.h"
 
 #include <QtCore/QMimeData>
 #include <QtCore/QStack>
@@ -513,7 +515,12 @@ void InitMessageFieldHandlers(MessageFieldHandlersArgs &&args) {
 		return On(PowerSaving::kChatSpoiler) || paused();
 	});
 	PROFILE_LOG(("Startup: InitMessageFieldHandlers before InstantReplaces"));
-	field->setInstantReplaces(Ui::InstantReplaces::Default());
+	crl::async([weak = base::make_weak(field)] {
+		const auto &replaces = Ui::InstantReplaces::Default();
+		crl::on_main(weak, [weak, &replaces] {
+			weak->setInstantReplaces(replaces);
+		});
+	});
 	field->setInstantReplacesEnabled(
 		Core::App().settings().replaceEmojiValue());
 	field->setMarkdownReplacesEnabled(rpl::single(Ui::MarkdownEnabledState{
