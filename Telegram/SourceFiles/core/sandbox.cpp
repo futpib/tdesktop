@@ -581,10 +581,11 @@ bool Sandbox::notify(QObject *receiver, QEvent *e) {
 			return true;
 		}
 	}
+	const auto weak = QPointer<QObject>(receiver);
 	const auto before = crl::profile();
 	const auto result = notifyOrInvoke(receiver, e);
 	const auto elapsed = crl::profile() - before;
-	if (e->type() == QEvent::Paint) {
+	if (weak && e->type() == QEvent::Paint) {
 		static bool firstPaintLogged = false;
 		if (!firstPaintLogged) {
 			firstPaintLogged = true;
@@ -592,7 +593,7 @@ bool Sandbox::notify(QObject *receiver, QEvent *e) {
 				).arg(receiver->metaObject()->className()));
 		}
 	}
-	if (elapsed > 10000) { // > 10ms
+	if (weak && elapsed > 10000) { // > 10ms
 		LOG(("[%1] Slow event: type=%2, receiver=%3, elapsed=%4us"
 			).arg(before / 1000., 0, 'f', 3
 			).arg(e->type()
