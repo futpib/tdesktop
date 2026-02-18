@@ -515,12 +515,7 @@ void InitMessageFieldHandlers(MessageFieldHandlersArgs &&args) {
 		return On(PowerSaving::kChatSpoiler) || paused();
 	});
 	PROFILE_LOG(("Startup: InitMessageFieldHandlers before InstantReplaces"));
-	crl::async([weak = base::make_weak(field)] {
-		const auto &replaces = Ui::InstantReplaces::Default();
-		crl::on_main(weak, [weak, &replaces] {
-			weak->setInstantReplaces(replaces);
-		});
-	});
+	field->setInstantReplaces(Ui::InstantReplaces::Default());
 	field->setInstantReplacesEnabled(
 		Core::App().settings().replaceEmojiValue());
 	field->setMarkdownReplacesEnabled(rpl::single(Ui::MarkdownEnabledState{
