@@ -189,7 +189,44 @@ Session::Session(
 	//
 	// Steps are chained via InvokeQueued so that paint events
 	// can be processed between heavy file reads.
-	const auto steps = std::make_shared<std::vector<Fn<void()>>>();
+	const auto steps = std::make_shared<std::vector<Fn<void()>>>(
+		std::initializer_list<Fn<void()>>{
+		[=] {
+			PROFILE_LOG(("Startup: Before readInstalledStickers"));
+			local().readInstalledStickers();
+			PROFILE_LOG(("Startup: After readInstalledStickers"));
+		}, [=] {
+			local().readInstalledMasks();
+			PROFILE_LOG(("Startup: After readInstalledMasks"));
+		}, [=] {
+			local().readInstalledCustomEmoji();
+			PROFILE_LOG(("Startup: After readInstalledCustomEmoji"));
+		}, [=] {
+			data().stickers().notifyUpdated(Data::StickersType::Stickers);
+			data().stickers().notifyUpdated(Data::StickersType::Masks);
+			data().stickers().notifyUpdated(Data::StickersType::Emoji);
+			PROFILE_LOG(("Startup: After notifyUpdated (installed)"));
+		}, [=] {
+			local().readFeaturedStickers();
+			PROFILE_LOG(("Startup: After readFeaturedStickers"));
+		}, [=] {
+			local().readFeaturedCustomEmoji();
+			PROFILE_LOG(("Startup: After readFeaturedCustomEmoji"));
+		}, [=] {
+			local().readRecentStickers();
+			local().readRecentMasks();
+			local().readFavedStickers();
+			local().readSavedGifs();
+			PROFILE_LOG(("Startup: After readRecent/Faved/Gifs"));
+		}, [=] {
+			data().stickers().notifyUpdated(Data::StickersType::Stickers);
+			data().stickers().notifyUpdated(Data::StickersType::Masks);
+			data().stickers().notifyUpdated(Data::StickersType::Emoji);
+			data().stickers().notifySavedGifsUpdated();
+			PROFILE_LOG(("Startup: Sticker loading finished"));
+			DEBUG_LOG(("Init: Account stored data load finished."));
+		},
+	});
 	const auto runNext = std::make_shared<Fn<void()>>();
 	*runNext = crl::guard(this, [=] {
 		if (steps->empty()) {
@@ -201,48 +238,6 @@ Session::Session(
 		if (!steps->empty()) {
 			crl::on_main(*runNext);
 		}
-	});
-	steps->push_back([=] {
-		PROFILE_LOG(("Startup: Before readInstalledStickers"));
-		local().readInstalledStickers();
-		PROFILE_LOG(("Startup: After readInstalledStickers"));
-	});
-	steps->push_back([=] {
-		local().readInstalledMasks();
-		PROFILE_LOG(("Startup: After readInstalledMasks"));
-	});
-	steps->push_back([=] {
-		local().readInstalledCustomEmoji();
-		PROFILE_LOG(("Startup: After readInstalledCustomEmoji"));
-	});
-	steps->push_back([=] {
-		data().stickers().notifyUpdated(Data::StickersType::Stickers);
-		data().stickers().notifyUpdated(Data::StickersType::Masks);
-		data().stickers().notifyUpdated(Data::StickersType::Emoji);
-		PROFILE_LOG(("Startup: After notifyUpdated (installed)"));
-	});
-	steps->push_back([=] {
-		local().readFeaturedStickers();
-		PROFILE_LOG(("Startup: After readFeaturedStickers"));
-	});
-	steps->push_back([=] {
-		local().readFeaturedCustomEmoji();
-		PROFILE_LOG(("Startup: After readFeaturedCustomEmoji"));
-	});
-	steps->push_back([=] {
-		local().readRecentStickers();
-		local().readRecentMasks();
-		local().readFavedStickers();
-		local().readSavedGifs();
-		PROFILE_LOG(("Startup: After readRecent/Faved/Gifs"));
-	});
-	steps->push_back([=] {
-		data().stickers().notifyUpdated(Data::StickersType::Stickers);
-		data().stickers().notifyUpdated(Data::StickersType::Masks);
-		data().stickers().notifyUpdated(Data::StickersType::Emoji);
-		data().stickers().notifySavedGifsUpdated();
-		PROFILE_LOG(("Startup: Sticker loading finished"));
-		DEBUG_LOG(("Init: Account stored data load finished."));
 	});
 
 	crl::on_main(this, [=] {
