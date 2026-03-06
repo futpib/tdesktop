@@ -199,9 +199,7 @@ Session::Session(
 		steps->erase(steps->begin());
 		step();
 		if (!steps->empty()) {
-			InvokeQueued(
-				QCoreApplication::instance(),
-				*runNext);
+			crl::on_main(*runNext);
 		}
 	});
 	steps->push_back([=] {
@@ -279,7 +277,7 @@ Session::Session(
 		}
 
 		PROFILE_LOG(("Startup: Session::crl::on_main before runNext"));
-		InvokeQueued(QCoreApplication::instance(), *runNext);
+		crl::on_main(*runNext);
 	});
 
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
