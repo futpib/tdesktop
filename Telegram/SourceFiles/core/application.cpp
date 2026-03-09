@@ -89,11 +89,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/premium_limits_box.h"
 #include "ui/accessible/ui_accessible_factory.h"
 #include "ui/boxes/confirm_box.h"
+<<<<<<< HEAD
 #include "ui/controls/location_picker.h"
 #include "tdlib/tdlib_bridge.h"
 #include "tdlib/td_json_server.h"
 #include "config.h"
 #include "core/version.h"
+=======
+#include "core/cached_webview_availability.h"
+>>>>>>> upstream/dev
 #include "styles/style_window.h"
 
 #include <td/telegram/td_json_client.h>
@@ -386,9 +390,8 @@ void Application::run() {
 	QMimeDatabase().mimeTypeForName(u"text/plain"_q);
 
 	// Check now to avoid re-entrance later.
-	[[maybe_unused]] const auto ivSupported = Iv::ShowButton();
-	[[maybe_unused]] const auto lpAvailable = Ui::LocationPicker::Available(
-		{});
+	[[maybe_unused]] const auto &webviewAvailability
+		= Core::CachedWebviewAvailability();
 
 	_windows.emplace(nullptr, std::make_unique<Window::Controller>());
 	setLastActiveWindow(_windows.front().second.get());
@@ -1248,36 +1251,7 @@ bool Application::openInternalUrl(const QString &url, QVariant context) {
 }
 
 QString Application::changelogLink() const {
-	const auto base = u"https://desktop.telegram.org/changelog"_q;
-	const auto languages = {
-		"id",
-		"de",
-		"fr",
-		"nl",
-		"pl",
-		"tr",
-		"uk",
-		"fa",
-		"ru",
-		"ms",
-		"es",
-		"it",
-		"uz",
-		"pt-br",
-		"be",
-		"ar",
-		"ko",
-	};
-	const auto current = _langpack->id().replace("-raw", "");
-	if (current.isEmpty()) {
-		return base;
-	}
-	for (const auto language : languages) {
-		if (current == language || current.split(u'-')[0] == language) {
-			return base + "?setln=" + language;
-		}
-	}
-	return base;
+	return u"https://telegramdesktop.github.io/tdesktop/changelog/"_q;
 }
 
 bool Application::openCustomUrl(
