@@ -94,3 +94,6 @@
 [submodule "Telegram/ThirdParty/td"]
 	path = Telegram/ThirdParty/td
 	url = https://github.com/futpib/td.git
+[submodule "Telegram/lib_translate"]
+	path = Telegram/lib_translate
+	url = https://github.com/desktop-app/lib_translate
