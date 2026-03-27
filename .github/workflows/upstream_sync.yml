@@ -62,6 +62,8 @@ jobs:
           git commit --no-edit -m "WIP: merge upstream/dev (has conflicts)"
           git push origin "$branch"
 
+          gh label create "upstream-sync" --color "0075ca" --description "Upstream sync conflict PR" --force || true
+
           gh pr create \
             --base dev \
             --head "$branch" \
