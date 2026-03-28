@@ -1850,10 +1850,13 @@ PRIVATE
     settings.cpp
     settings.h
     stdafx.h
+<<<<<<< HEAD
     tdlib/tdlib_bridge.cpp
     tdlib/tdlib_bridge.h
     tdlib/td_json_server.cpp
     tdlib/td_json_server.h
+=======
+>>>>>>> upstream/dev
     tray_accounts_menu.h
     tray.cpp
     tray.h
