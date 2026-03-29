@@ -91,9 +91,12 @@
 [submodule "Telegram/ThirdParty/xdg-desktop-portal"]
 	path = Telegram/ThirdParty/xdg-desktop-portal
 	url = https://github.com/flatpak/xdg-desktop-portal.git
+<<<<<<< HEAD
 [submodule "Telegram/ThirdParty/td"]
 	path = Telegram/ThirdParty/td
 	url = https://github.com/futpib/td.git
+=======
+>>>>>>> upstream/dev
 [submodule "Telegram/lib_translate"]
 	path = Telegram/lib_translate
 	url = https://github.com/desktop-app/lib_translate

@@ -89,11 +89,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/premium_limits_box.h"
 #include "ui/accessible/ui_accessible_factory.h"
 #include "ui/boxes/confirm_box.h"
+<<<<<<< HEAD
 #include "ui/controls/location_picker.h"
 #include "tdlib/tdlib_bridge.h"
 #include "tdlib/td_json_server.h"
 #include "config.h"
 #include "core/version.h"
+=======
+>>>>>>> upstream/dev
 #include "core/cached_webview_availability.h"
 #include "styles/style_window.h"
 
