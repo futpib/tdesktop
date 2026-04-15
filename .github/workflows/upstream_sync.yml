@@ -17,3 +17,21 @@ jobs:
           owner: telegramdesktop
           base: dev
           head: dev
+
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Bump Telegram/ThirdParty/td to futpib/td:master
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TD_SHA=$(gh api repos/futpib/td/branches/master --jq '.commit.sha')
+          CURRENT=$(git ls-tree HEAD Telegram/ThirdParty/td | awk '{print $3}')
+          if [ "$TD_SHA" != "$CURRENT" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git update-index --cacheinfo "160000,$TD_SHA,Telegram/ThirdParty/td"
+            git commit -m "Bump Telegram/ThirdParty/td to $TD_SHA"
+            git push origin dev
+          fi
