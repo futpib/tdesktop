@@ -95,7 +95,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Dialogs {
 namespace {
 
-constexpr auto kFreezeTimeout = crl::time(5000);
+constexpr auto kFreezeTimeout = 2 * crl::time(1000);
 constexpr auto kHashtagResultsLimit = 5;
 constexpr auto kStartReorderThreshold = 30;
 constexpr auto kStartDragToFilterThresholdX = kStartReorderThreshold;
@@ -2839,7 +2839,11 @@ void InnerWidget::dialogRowReplaced(
 		_selected = newRow;
 	}
 	if (_pressed == oldRow) {
-		setPressed(newRow, _pressedTopicJump, _pressedRightButton);
+		if (newRow) {
+			setPressed(newRow, _pressedTopicJump, _pressedRightButton);
+		} else {
+			clearPressed();
+		}
 	}
 	if (_dragging == oldRow) {
 		if (newRow) {
@@ -3080,12 +3084,6 @@ void InnerWidget::updateDialogRow(
 
 void InnerWidget::enterEventHook(QEnterEvent *e) {
 	setMouseTracking(true);
-	if (skipChatsListFreeze()) {
-		unfreezeShownList(false);
-	} else {
-		_shownList->freeze();
-		_freezeTimer.callOnce(kFreezeTimeout);
-	}
 }
 
 Row *InnerWidget::shownRowByKey(Key key) {
@@ -4340,8 +4338,6 @@ void InnerWidget::refreshEmpty() {
 			this,
 			tr::lng_no_conversations_button(),
 			st::dialogEmptyButton);
-		_emptyButton->setTextTransform(
-			Ui::RoundButton::TextTransform::NoTransform);
 		_emptyButton->setVisible(isListVisible);
 		_emptyButton->setClickedCallback([=, window = _controller] {
 			window->show(PrepareContactsBox(window));
@@ -5675,6 +5671,9 @@ not_null<Ui::QuickActionContext*> InnerWidget::ensureQuickAction(int64 key) {
 
 int64 InnerWidget::calcSwipeKey(int top) {
 	top -= dialogsOffset();
+	if (top < 0) {
+		return 0;
+	}
 	for (auto it = _shownList->begin(); it != _shownList->end(); ++it) {
 		const auto row = it->get();
 		const auto from = row->top();

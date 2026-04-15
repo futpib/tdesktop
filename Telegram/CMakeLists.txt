@@ -99,7 +99,9 @@ PRIVATE
     desktop-app::external_xxhash
 )
 
-telegram_add_apple_swift_runtime(Telegram)
+if (NOT DESKTOP_APP_DISABLE_SWIFT6)
+    telegram_add_apple_swift_runtime(Telegram)
+endif()
 
 target_precompile_headers(Telegram PRIVATE $<$<COMPILE_LANGUAGE:CXX,OBJCXX>:${src_loc}/stdafx.h>)
 nice_target_sources(Telegram ${src_loc}
@@ -132,6 +134,8 @@ PRIVATE
     api/api_common.h
     api/api_confirm_phone.cpp
     api/api_confirm_phone.h
+    api/api_compose_with_ai.cpp
+    api/api_compose_with_ai.h
     api/api_credits.cpp
     api/api_credits.h
     api/api_credits_history_entry.cpp
@@ -165,6 +169,10 @@ PRIVATE
     api/api_premium.h
     api/api_premium_option.cpp
     api/api_premium_option.h
+    api/api_reactions_notify_settings.cpp
+    api/api_reactions_notify_settings.h
+    api/api_read_metrics.cpp
+    api/api_read_metrics.h
     api/api_report.cpp
     api/api_report.h
     api/api_ringtones.cpp
@@ -225,6 +233,8 @@ PRIVATE
     boxes/peers/channel_ownership_transfer.h
     boxes/peers/choose_peer_box.cpp
     boxes/peers/choose_peer_box.h
+    boxes/peers/create_managed_bot_box.cpp
+    boxes/peers/create_managed_bot_box.h
     boxes/peers/edit_contact_box.cpp
     boxes/peers/edit_contact_box.h
     boxes/peers/edit_forum_topic_box.cpp
@@ -370,6 +380,8 @@ PRIVATE
     boxes/stickers_box.h
     boxes/transfer_gift_box.cpp
     boxes/transfer_gift_box.h
+    boxes/compose_ai_box.cpp
+    boxes/compose_ai_box.h
     boxes/translate_box.cpp
     boxes/translate_box.h
     boxes/url_auth_box.cpp
@@ -682,6 +694,8 @@ PRIVATE
     data/data_photo_media.h
     data/data_poll.cpp
     data/data_poll.h
+    data/data_poll_messages.cpp
+    data/data_poll_messages.h
     data/data_premium_limits.cpp
     data/data_premium_limits.h
     data/data_pts_waiter.cpp
@@ -814,6 +828,10 @@ PRIVATE
     history/admin_log/history_admin_log_section.cpp
     history/admin_log/history_admin_log_section.h
     history/view/controls/compose_controls_common.h
+    history/view/controls/history_view_compose_ai_button.cpp
+    history/view/controls/history_view_compose_ai_button.h
+    history/view/controls/history_view_compose_ai_tooltip.cpp
+    history/view/controls/history_view_compose_ai_tooltip.h
     history/view/controls/history_view_compose_controls.cpp
     history/view/controls/history_view_compose_controls.h
     history/view/controls/history_view_compose_media_edit_manager.cpp
@@ -876,6 +894,8 @@ PRIVATE
     history/view/media/history_view_photo.h
     history/view/media/history_view_poll.cpp
     history/view/media/history_view_poll.h
+    history/view/media/menu/history_view_poll_menu.cpp
+    history/view/media/menu/history_view_poll_menu.h
     history/view/media/history_view_premium_gift.cpp
     history/view/media/history_view_premium_gift.h
     history/view/media/history_view_save_document_action.cpp
@@ -937,6 +957,10 @@ PRIVATE
     history/view/history_view_cursor_state.h
     history/view/history_view_draw_to_reply.cpp
     history/view/history_view_draw_to_reply.h
+    history/view/history_view_add_poll_option.cpp
+    history/view/history_view_add_poll_option.h
+    history/view/history_view_element_overlay.cpp
+    history/view/history_view_element_overlay.h
     history/view/history_view_element.cpp
     history/view/history_view_element.h
     history/view/history_view_emoji_interactions.cpp
@@ -967,6 +991,8 @@ PRIVATE
     history/view/history_view_quick_action.h
     history/view/history_view_reaction_preview.cpp
     history/view/history_view_reaction_preview.h
+    history/view/history_view_read_metrics_tracker.cpp
+    history/view/history_view_read_metrics_tracker.h
     history/view/history_view_reply.cpp
     history/view/history_view_reply.h
     history/view/history_view_reply_button.cpp
@@ -1099,6 +1125,8 @@ PRIVATE
     info/peer_gifts/info_peer_gifts_common.h
     info/peer_gifts/info_peer_gifts_widget.cpp
     info/peer_gifts/info_peer_gifts_widget.h
+    info/polls/info_polls_list_widget.cpp
+    info/polls/info_polls_list_widget.h
     info/polls/info_polls_results_inner_widget.cpp
     info/polls/info_polls_results_inner_widget.h
     info/polls/info_polls_results_widget.cpp
@@ -1289,6 +1317,8 @@ PRIVATE
     media/player/media_player_float.h
     media/player/media_player_instance.cpp
     media/player/media_player_instance.h
+    media/player/media_player_listen_tracker.cpp
+    media/player/media_player_listen_tracker.h
     media/player/media_player_panel.cpp
     media/player/media_player_panel.h
     media/player/media_player_volume_controller.cpp
@@ -1421,6 +1451,8 @@ PRIVATE
     overview/overview_layout.cpp
     overview/overview_layout.h
     overview/overview_layout_delegate.h
+    poll/poll_media_upload.cpp
+    poll/poll_media_upload.h
     passport/passport_encryption.cpp
     passport/passport_encryption.h
     passport/passport_form_controller.cpp
@@ -1606,6 +1638,8 @@ PRIVATE
     settings/settings_codes.h
     settings/settings_common_session.cpp
     settings/settings_common_session.h
+    settings/detailed_settings_button.cpp
+    settings/detailed_settings_button.h
     settings/sections/settings_credits.cpp
     settings/sections/settings_credits.h
     settings/settings_credits_graphics.cpp
@@ -1624,6 +1658,8 @@ PRIVATE
     settings/sections/settings_local_passcode.h
     settings/sections/settings_main.cpp
     settings/sections/settings_main.h
+    settings/settings_recent_searches.cpp
+    settings/settings_recent_searches.h
     settings/settings_search.cpp
     settings/settings_search.h
     settings/settings_faq_suggestions.cpp
@@ -1634,6 +1670,8 @@ PRIVATE
     settings/sections/settings_notifications.h
     settings/sections/settings_privacy_security.cpp
     settings/sections/settings_privacy_security.h
+    settings/sections/settings_notifications_reactions.cpp
+    settings/sections/settings_notifications_reactions.h
     settings/sections/settings_notifications_type.cpp
     settings/sections/settings_notifications_type.h
     settings/sections/settings_passkeys.cpp
@@ -1721,6 +1759,8 @@ PRIVATE
     ui/chat/choose_theme_controller.h
     ui/chat/sponsored_message_bar.cpp
     ui/chat/sponsored_message_bar.h
+    ui/controls/compose_ai_button_factory.cpp
+    ui/controls/compose_ai_button_factory.h
     ui/controls/emoji_button_factory.cpp
     ui/controls/emoji_button_factory.h
     ui/controls/location_picker.cpp
@@ -1813,6 +1853,7 @@ PRIVATE
     window/window_section_common.h
     window/window_separate_id.cpp
     window/window_separate_id.h
+    window/session/window_session_media.cpp
     window/window_session_controller.cpp
     window/window_session_controller.h
     window/window_session_controller_link_info.h
