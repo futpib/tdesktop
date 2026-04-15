@@ -13,6 +13,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: tgymnich/fork-sync@e905b254d56ebb367514cd05fa96bf7516bd2a5a # v2.0.10
+        continue-on-error: true
         with:
           owner: telegramdesktop
           base: dev
