@@ -193,6 +193,8 @@ PRIVATE
     api/api_statistics_data_deserialize.h
     api/api_statistics_sender.cpp
     api/api_statistics_sender.h
+    api/api_stickers_creator.cpp
+    api/api_stickers_creator.h
     api/api_suggest_post.cpp
     api/api_suggest_post.h
     api/api_text_entities.cpp
@@ -358,6 +360,8 @@ PRIVATE
     boxes/send_gif_with_caption_box.h
     boxes/send_files_box.cpp
     boxes/send_files_box.h
+    boxes/send_files_box_reply_header.cpp
+    boxes/send_files_box_reply_header.h
     boxes/share_box.cpp
     boxes/share_box.h
     boxes/star_gift_auction_box.cpp
@@ -374,6 +378,8 @@ PRIVATE
     boxes/star_gift_preview_box.h
     boxes/star_gift_resale_box.cpp
     boxes/star_gift_resale_box.h
+    boxes/sticker_creator_box.cpp
+    boxes/sticker_creator_box.h
     boxes/sticker_set_box.cpp
     boxes/sticker_set_box.h
     boxes/stickers_box.cpp
@@ -469,6 +475,8 @@ PRIVATE
     chat_helpers/emoji_keywords.h
     chat_helpers/emoji_list_widget.cpp
     chat_helpers/emoji_list_widget.h
+    chat_helpers/emoji_picker_overlay.cpp
+    chat_helpers/emoji_picker_overlay.h
     chat_helpers/emoji_sets_manager.cpp
     chat_helpers/emoji_sets_manager.h
     chat_helpers/emoji_suggestions_widget.cpp
