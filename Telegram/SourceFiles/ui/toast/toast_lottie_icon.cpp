@@ -29,7 +29,7 @@ void AddLottieToToast(
 	});
 	const auto icon = state->lottieIcon.get();
 	lottieWidget->resize(iconSize);
-	lottieWidget->move(st.iconPosition);
+	lottieWidget->move(st.padding.left(), st.padding.top());
 	lottieWidget->show();
 	lottieWidget->raise();
 	icon->animate(

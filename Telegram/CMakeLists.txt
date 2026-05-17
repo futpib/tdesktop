@@ -2175,6 +2175,7 @@ set_source_files_properties(${TL_TELEGRAM_API_JSON_AUTO} PROPERTIES GENERATED TR
 set_source_files_properties(${TL_TELEGRAM_API_JSON_AUTO} PROPERTIES COMPILE_OPTIONS "${td_include_dirs}")
 set_source_files_properties(${TL_TELEGRAM_API_JSON_AUTO} PROPERTIES SKIP_AUTOGEN TRUE)
 target_sources(Telegram PRIVATE ${TL_TELEGRAM_API_JSON_AUTO})
+add_dependencies(Telegram tl_generate_telegram_api_json)
 
 target_compile_definitions(Telegram
 PRIVATE
