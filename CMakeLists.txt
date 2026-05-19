@@ -4,7 +4,7 @@
 # For license and copyright information please follow this link:
 # https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
-cmake_minimum_required(VERSION 3.25...3.31)
+cmake_minimum_required(VERSION 3.31)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -25,6 +25,7 @@ project(Telegram
 
 if (APPLE)
     enable_language(OBJC OBJCXX)
+    set(QT_NO_PRIVATE_MODULE_WARNING ON)
 endif()
 
 if (configuration_types_init
