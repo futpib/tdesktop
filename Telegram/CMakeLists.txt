@@ -1189,6 +1189,8 @@ PRIVATE
     info/profile/info_profile_members_controllers.h
     info/profile/info_profile_phone_menu.cpp
     info/profile/info_profile_phone_menu.h
+    info/profile/info_profile_section_stack.cpp
+    info/profile/info_profile_section_stack.h
     info/profile/info_profile_status_label.cpp
     info/profile/info_profile_status_label.h
     info/profile/info_profile_top_bar.cpp
@@ -2182,7 +2184,7 @@ set_target_properties(Telegram PROPERTIES
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER ${bundle_identifier}
     XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION ${desktop_app_version_string}
     XCODE_ATTRIBUTE_PRODUCT_NAME ${output_name}
-    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon
+    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME Icon
     XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME YES
     XCODE_ATTRIBUTE_COMBINE_HIDPI_IMAGES YES
     XCODE_ATTRIBUTE_COPY_PHASE_STRIP NO
