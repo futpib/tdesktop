@@ -105,6 +105,11 @@ private:
 	struct AccountEntry {
 		int clientId = 0;
 		AccountInfo info;
+		// Set true after the one-shot loadChats warm-up is fired on the
+		// first updateAuthorizationState -> authorizationStateReady.
+		// See pollTdLib(); prevents out-of-order chat-list requests from
+		// hitting a fatal CHECK in TDLib's MessagesManager.
+		bool warmed = false;
 	};
 	base::flat_map<int, AccountEntry> _accounts;
 	base::flat_map<int, int> _clientIdToAccount;

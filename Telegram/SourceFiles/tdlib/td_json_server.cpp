@@ -1067,6 +1067,32 @@ void ControlServer::pollTdLib() {
 		}
 		const auto accountIndex = accountIt->second;
 
+		// One-shot chat-list warm-up: the first time this TDLib client
+		// reaches authorizationStateReady, send loadChats so the dialog
+		// folder structure is allocated before any client (e.g.
+		// searchChats) touches it. Without this, an out-of-order
+		// chat-list-touching request can hit a fatal LOG_CHECK in
+		// TDLib's MessagesManager::set_dialog_order on a null folder.
+		if (obj.value("@type").toString() == u"updateAuthorizationState"_q) {
+			const auto state = obj.value(
+				"authorization_state").toObject();
+			if (state.value("@type").toString()
+					== u"authorizationStateReady"_q) {
+				auto entryIt = _accounts.find(accountIndex);
+				if (entryIt != _accounts.end()
+						&& !entryIt->second.warmed) {
+					entryIt->second.warmed = true;
+					const auto warmRequest = QJsonDocument(QJsonObject{
+						{ "@type", "loadChats" },
+						{ "chat_list", QJsonObject{
+							{ "@type", "chatListMain" } } },
+						{ "limit", 100 },
+					}).toJson(QJsonDocument::Compact);
+					td_send(clientId, warmRequest.constData());
+				}
+			}
+		}
+
 		// Remove @client_id, wrap in envelope with "type":"tdlib".
 		obj.remove("@client_id");
 
