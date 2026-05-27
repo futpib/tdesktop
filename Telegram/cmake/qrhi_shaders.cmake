@@ -17,6 +17,7 @@ find_program(QSB_EXECUTABLE qsb
         "${QT_DIR}/../../../bin"
         "${QT_DIR}/../../qt6/libexec"
         "${QT_DIR}/../../qt6/bin"
+        "${QT_DIR}/../../../opt/qtshadertools/bin"
     PATHS ENV PATH)
 
 if (NOT QSB_EXECUTABLE)
@@ -43,7 +44,13 @@ foreach(_src ${_shader_sources})
     if("${_ext}" STREQUAL ".comp")
         set(_glsl_ver "310es,430")
     else()
-        set(_glsl_ver "100es,120,150")
+        file(READ ${_src} _src_contents)
+        string(FIND "${_src_contents}" "texelFetch" _has_texelfetch)
+        if(NOT _has_texelfetch EQUAL -1)
+            set(_glsl_ver "300es,150")
+        else()
+            set(_glsl_ver "100es,120,150")
+        endif()
     endif()
 
     add_custom_command(

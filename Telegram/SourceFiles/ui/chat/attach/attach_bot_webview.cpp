@@ -128,11 +128,17 @@ struct NativeMessage {
 	return RectPart::Left;
 }
 
+[[nodiscard]] bool IsNoArgumentsSentinel(const QString &string) {
+	return string.isEmpty() || string == u"\"\""_q;
+}
+
 [[nodiscard]] bool CanParseArguments(QJsonValue value) {
 	if (value.isObject()) {
 		return true;
 	} else if (!value.isString()) {
 		return false;
+	} else if (IsNoArgumentsSentinel(value.toString())) {
+		return true;
 	}
 	auto error = QJsonParseError();
 	const auto document = QJsonDocument::fromJson(
@@ -1319,9 +1325,7 @@ void Panel::setupDownloadsProgress(
 				state->animation.start(0.);
 			}
 			toggle(true);
-		} else if ((state->progress.total && !progress.total)
-			|| (state->progress.ready < state->progress.total
-				&& progress.ready == progress.total)) {
+		} else if (state->shown && !progress.loading) {
 			state->animation.update(1., false, crl::now());
 			toggle(false);
 		}
