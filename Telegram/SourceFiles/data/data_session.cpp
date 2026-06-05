@@ -4016,7 +4016,9 @@ not_null<WebPageData*> Session::processWebpage(
 not_null<WebPageData*> Session::webpage(
 		WebPageId id,
 		const QString &siteName,
-		const TextWithEntities &content) {
+		const TextWithEntities &content,
+		PhotoData *photo,
+		DocumentData *document) {
 	return webpage(
 		id,
 		WebPageType::Article,
@@ -4025,8 +4027,8 @@ not_null<WebPageData*> Session::webpage(
 		siteName,
 		QString(),
 		content,
-		nullptr,
-		nullptr,
+		photo,
+		document,
 		WebPageCollage(),
 		nullptr,
 		nullptr,
