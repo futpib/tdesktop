@@ -114,6 +114,7 @@ struct TdLibBridge::Private {
 		td::NetQueryPtr query;
 		int32 rawDcId = 0;
 		td::NetQuery::Type type = td::NetQuery::Type::Common;
+		MTP::details::SerializedRequest serialized;
 	};
 	struct ClientState {
 		MTP::Instance *mtp = nullptr;
@@ -138,7 +139,6 @@ struct TdLibBridge::Private {
 	base::flat_map<uint64, IncomingEntry> incoming;
 
 	void sendToMtp(TdLibBridge *bridge, int clientId, PendingQuery &&pending);
-	void completeQuery(int clientId, td::NetQueryPtr query);
 	[[nodiscard]] static MTP::ShiftedDcId mapDcId(
 		MTP::Instance *mtp,
 		int32 rawDcId,
@@ -161,29 +161,41 @@ void TdLibBridge::releaseAllQueries() {
 
 	std::lock_guard<std::mutex> lock(_d->mutex);
 
-	// Complete all incoming (stashed but not yet dispatched) queries.
+	const auto shuttingDown = [] {
+		auto result = td::ExternalQueryResult();
+		result.is_ok = false;
+		result.error_code = 500;
+		result.error_message = "Bridge shutting down";
+		return result;
+	};
+
+	// Finish all incoming (stashed but not yet dispatched) queries.  set_error
+	// and delivery run on the owning client's scheduler thread.
 	for (auto &[id, entry] : _d->incoming) {
-		entry.pending.query->set_error(
-			td::Status::Error(500, "Bridge shutting down"));
-		_d->completeQuery(entry.clientId, std::move(entry.pending.query));
+		td::complete_external_query(
+			entry.clientId,
+			std::move(entry.pending.query),
+			shuttingDown());
 	}
 	_d->incoming.clear();
 
-	// Complete all queries waiting for MTP instance.
+	// Finish all queries waiting for the MTP instance.
 	for (auto &[clientId, state] : _d->clients) {
 		for (auto &p : state.pendingBeforeMtp) {
-			p.query->set_error(
-				td::Status::Error(500, "Bridge shutting down"));
-			_d->completeQuery(clientId, std::move(p.query));
+			td::complete_external_query(
+				clientId,
+				std::move(p.query),
+				shuttingDown());
 		}
 		state.pendingBeforeMtp.clear();
 	}
 
-	// Complete all in-flight queries (sent to MTP, waiting for response).
+	// Finish all in-flight queries (sent to MTP, waiting for response).
 	for (auto &[requestId, pair] : _d->sentQueries) {
-		pair.second->set_error(
-			td::Status::Error(500, "Bridge shutting down"));
-		_d->completeQuery(pair.first, std::move(pair.second));
+		td::complete_external_query(
+			pair.first,
+			std::move(pair.second),
+			shuttingDown());
 	}
 	_d->sentQueries.clear();
 }
@@ -212,16 +224,20 @@ void TdLibBridge::removeClient(int tdlibClientId) {
 void TdLibBridge::registerExternalDispatch() {
 	td::set_external_dispatch(
 		[this](td::int32 clientId, td::NetQueryPtr query) {
-			// Called from TDLib's scheduler thread.
-			const auto rawDcId = query->dc_id().is_main()
+			// Called from TDLib's scheduler thread.  Serialize the request and
+			// read everything we need from the NetQuery here, on the scheduler
+			// thread; only plain data crosses to the Qt side.  The NetQueryPtr
+			// is stashed and never touched off the scheduler thread until it is
+			// finished on one.
+			Private::PendingQuery pending;
+			pending.rawDcId = query->dc_id().is_main()
 				? 0
 				: query->dc_id().get_raw_id();
-			const auto type = query->type();
-
-			Private::PendingQuery pending;
+			pending.type = query->type();
+			pending.serialized = BuildSerializedRequest(
+				query->query(),
+				query->gzip_flag());
 			pending.query = std::move(query);
-			pending.rawDcId = rawDcId;
-			pending.type = type;
 
 			// Stash the query (which owns a NetQueryPtr) in a
 			// mutex-protected map and only pass a plain uint64 id
@@ -273,18 +289,18 @@ void TdLibBridge::Private::sendToMtp(
 	}
 	auto *mtp = it->second.mtp;
 
-	auto &query = pending.query;
 	const auto shiftedDcId = mapDcId(mtp, pending.rawDcId, pending.type);
 
-	auto serialized = BuildSerializedRequest(
-		query->query(),
-		query->gzip_flag());
-
+	// The request was serialized on the scheduler thread when the query was
+	// dispatched; here we only attach a request id and hand plain bytes to MTP.
+	auto serialized = std::move(pending.serialized);
 	const auto requestId = MTP::details::GetNextRequestId();
 	serialized->requestId = requestId;
 
-	// Store the TDLib query so we can complete it when the response arrives.
-	sentQueries.emplace(requestId, std::make_pair(clientId, std::move(query)));
+	// Hold the TDLib query until the response arrives.  It is never touched on
+	// this (Qt) thread: it is moved into complete_external_query, which finishes
+	// it on the owning client's scheduler thread.
+	sentQueries.emplace(requestId, std::make_pair(clientId, std::move(pending.query)));
 
 	auto done = [this, requestId](const MTP::Response &response) -> bool {
 		auto it = sentQueries.find(requestId);
@@ -295,19 +311,22 @@ void TdLibBridge::Private::sendToMtp(
 		auto query = std::move(it->second.second);
 		sentQueries.erase(it);
 
-		// Convert the MTP response buffer to a td::BufferSlice.
+		auto result = td::ExternalQueryResult();
 		const auto &reply = response.reply;
 		if (!reply.isEmpty()) {
 			const auto *data = reinterpret_cast<const char *>(
 				reply.constData());
 			const auto size = static_cast<size_t>(
 				reply.size() * sizeof(mtpPrime));
-			query->set_ok(td::BufferSlice(td::Slice(data, size)));
+			result.is_ok = true;
+			result.ok_data.assign(data, size);
 		} else {
-			query->set_error(td::Status::Error(500, "Empty response"));
+			result.is_ok = false;
+			result.error_code = 500;
+			result.error_message = "Empty response";
 		}
 
-		completeQuery(cId, std::move(query));
+		td::complete_external_query(cId, std::move(query), std::move(result));
 		return true;
 	};
 
@@ -322,11 +341,12 @@ void TdLibBridge::Private::sendToMtp(
 		auto query = std::move(it->second.second);
 		sentQueries.erase(it);
 
-		const auto code = error.code();
-		const auto message = error.type().toStdString();
-		query->set_error(td::Status::Error(code, message));
+		auto result = td::ExternalQueryResult();
+		result.is_ok = false;
+		result.error_code = error.code();
+		result.error_message = error.type().toStdString();
 
-		completeQuery(cId, std::move(query));
+		td::complete_external_query(cId, std::move(query), std::move(result));
 		return true;
 	};
 
@@ -337,10 +357,6 @@ void TdLibBridge::Private::sendToMtp(
 		shiftedDcId,
 		0,  // msCanWait
 		0); // afterRequestId
-}
-
-void TdLibBridge::Private::completeQuery(int clientId, td::NetQueryPtr query) {
-	td::complete_external_query(clientId, std::move(query));
 }
 
 MTP::ShiftedDcId TdLibBridge::Private::mapDcId(
