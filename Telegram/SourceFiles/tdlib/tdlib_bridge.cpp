@@ -289,7 +289,24 @@ void TdLibBridge::Private::sendToMtp(
 	}
 	auto *mtp = it->second.mtp;
 
-	const auto shiftedDcId = mapDcId(mtp, pending.rawDcId, pending.type);
+	auto queryType = pending.type;
+
+	// Route uploads on the main connection instead of the shifted upload
+	// connection.  The shifted upload connection is unreliable for the queries
+	// we inject:
+	//   * small files: an upload.saveFilePart part saved there is not found by
+	//     the messages.sendMedia that references it -> INPUT_FETCH_FAIL;
+	//   * large files: after ~40MB the shifted connection stops delivering
+	//     responses; the in-flight parts never complete (no reply, no error),
+	//     so the upload stalls forever and the message eventually fails.
+	// The main connection is kept alive by the rest of the session's traffic
+	// and delivers reliably, so send upload parts as common queries.  Downloads
+	// keep their dedicated connection.
+	if (queryType == td::NetQuery::Type::Upload) {
+		queryType = td::NetQuery::Type::Common;
+	}
+
+	const auto shiftedDcId = mapDcId(mtp, pending.rawDcId, queryType);
 
 	// The request was serialized on the scheduler thread when the query was
 	// dispatched; here we only attach a request id and hand plain bytes to MTP.
