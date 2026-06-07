@@ -21,6 +21,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_config.h"
 #include "lang/lang_keys.h"
 
+// Native send-file path (mirrors the desktop GUI uploader) used by the
+// "sendFile" control command, so socket clients can upload through the same
+// Storage::Uploader the GUI uses instead of TDLib's FileUploader.
+#include "apiwrap.h"
+#include "api/api_common.h"
+#include "data/data_session.h"
+#include "data/data_peer_id.h"
+#include "history/history.h"
+#include "storage/storage_media_prepare.h"
+#include "storage/localimageloader.h"
+#include "ui/chat/attach/attach_prepare.h"
+#include "styles/style_boxes.h"
+
 #include <td/telegram/td_json_client.h>
 #include <td/telegram/telegram_api.h>
 #include <td/telegram/telegram_api.hpp>
@@ -237,6 +250,23 @@ QJsonObject ExportStateToJson(
 	};
 }
 
+// Map a TDLib-style chat_id to a tdesktop PeerId, matching TDLib's DialogId
+// encoding: users are positive; basic groups are -group_id; channels and
+// supergroups are (ZERO_CHANNEL_ID - channel_id). Secret chats are not
+// supported. Returns PeerId(0) for an out-of-range (secret-chat) id.
+[[nodiscard]] PeerId PeerIdFromTdLibChatId(qint64 chatId) {
+	constexpr qint64 kZeroChannelId = -1000000000000LL;
+	constexpr qint64 kZeroSecretChatId = -2000000000000LL;
+	if (chatId > 0) {
+		return peerFromUser(UserId(chatId));
+	} else if (chatId > kZeroChannelId) {
+		return peerFromChat(ChatId(-chatId));
+	} else if (chatId > kZeroSecretChatId) {
+		return peerFromChannel(ChannelId(kZeroChannelId - chatId));
+	}
+	return PeerId(0);
+}
+
 } // namespace
 
 ControlServer::ControlServer(
@@ -421,7 +451,9 @@ void ControlServer::processLine(
 	} else if (type == u"tdesktop"_q) {
 		const auto payload = obj.value("payload").toObject();
 		const auto command = payload.value("command").toString();
-		if (command == u"export"_q || command == u"cancelExport"_q) {
+		if (command == u"export"_q
+			|| command == u"cancelExport"_q
+			|| command == u"sendFile"_q) {
 			needsAccountCheck = true;
 			accountIndex = payload.value("account").toInt(_defaultAccount);
 		}
@@ -825,6 +857,8 @@ void ControlServer::handleControlRequest(
 		handleExportCommand(socket, payload, extra);
 	} else if (command == u"cancelExport"_q) {
 		handleCancelExportCommand(socket, payload, extra);
+	} else if (command == u"sendFile"_q) {
+		handleSendFileCommand(socket, payload, extra);
 	} else {
 		auto responsePayload = QJsonObject{
 			{ "error", u"Unknown command: \"%1\""_q.arg(command) },
@@ -1020,6 +1054,106 @@ void ControlServer::handleCancelExportCommand(
 	sendJson(socket, QJsonObject{
 		{ "type", "tdesktop" },
 		{ "payload", responsePayload },
+	});
+}
+
+void ControlServer::handleSendFileCommand(
+		QLocalSocket *socket,
+		const QJsonObject &payload,
+		const QJsonValue &extra) {
+	const auto accountIndex = payload.value("account").toInt(_defaultAccount);
+	const auto respond = [&](QJsonObject responsePayload) {
+		responsePayload["command"] = u"sendFile"_q;
+		responsePayload["account"] = accountIndex;
+		if (!extra.isUndefined()) {
+			responsePayload["@extra"] = extra;
+		}
+		sendJson(socket, QJsonObject{
+			{ "type", "tdesktop" },
+			{ "payload", responsePayload },
+		});
+	};
+	const auto fail = [&](int code, const QString &message) {
+		respond(QJsonObject{
+			{ "state", "error" },
+			{ "code", code },
+			{ "message", message },
+		});
+	};
+
+	if (!_domain) {
+		return fail(500, u"Domain not available"_q);
+	}
+
+	const auto path = payload.value("path").toString();
+	if (path.isEmpty()) {
+		return fail(400, u"Missing required field: path"_q);
+	}
+	if (!QFile::exists(path)) {
+		return fail(400, u"File not found: %1"_q.arg(path));
+	}
+
+	// Resolve account -> active session.
+	Main::Account *account = nullptr;
+	for (const auto &[idx, acc] : _domain->accounts()) {
+		if (idx == accountIndex) {
+			account = acc.get();
+			break;
+		}
+	}
+	if (!account || !account->sessionExists()) {
+		return fail(404,
+			u"No active session for account %1"_q.arg(accountIndex));
+	}
+	const auto session = &account->session();
+
+	// Resolve the target peer: explicit tdesktop peer_id, or a TDLib chat_id.
+	auto peerId = PeerId(0);
+	if (payload.contains("peer_id")) {
+		peerId = PeerId(uint64(
+			payload.value("peer_id").toVariant().toLongLong()));
+	} else if (payload.contains("chat_id")) {
+		peerId = PeerIdFromTdLibChatId(
+			qint64(payload.value("chat_id").toVariant().toLongLong()));
+	}
+	if (!peerId.value) {
+		return fail(400,
+			u"Missing or unsupported target (chat_id or peer_id)"_q);
+	}
+
+	const auto peer = session->data().peerLoaded(peerId);
+	if (!peer) {
+		return fail(404,
+			u"Peer %1 is not loaded for this account"_q.arg(peerId.value));
+	}
+	const auto history = session->data().history(peer);
+
+	// Build the prepared list exactly the way the GUI does, then hand it to
+	// the native ApiWrap::sendFiles path (Storage::Uploader drives the upload).
+	auto list = Storage::PrepareMediaList(
+		QStringList(path),
+		st::sendMediaPreviewSize,
+		session->premium());
+	if (list.files.empty()) {
+		return fail(400, u"Failed to prepare file for sending"_q);
+	}
+	const auto caption = payload.value("caption").toString();
+	if (!caption.isEmpty()) {
+		list.files.back().caption.text = caption;
+	}
+	const auto type = payload.value("as_photo").toBool(false)
+		? SendMediaType::Photo
+		: SendMediaType::File;
+
+	session->api().sendFiles(
+		std::move(list),
+		type,
+		nullptr,
+		Api::SendAction(history));
+
+	respond(QJsonObject{
+		{ "state", "queued" },
+		{ "peer_id", qint64(peerId.value) },
 	});
 }
 

@@ -83,6 +83,10 @@ private:
 		QLocalSocket *socket,
 		const QJsonObject &payload,
 		const QJsonValue &extra);
+	void handleSendFileCommand(
+		QLocalSocket *socket,
+		const QJsonObject &payload,
+		const QJsonValue &extra);
 	void sendJson(QLocalSocket *socket, const QJsonObject &obj);
 	void broadcastJson(const QJsonObject &obj);
 
