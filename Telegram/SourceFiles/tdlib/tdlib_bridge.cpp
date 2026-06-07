@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/core_types.h"
 #include "mtproto/details/mtproto_serialized_request.h"
 #include "mtproto/mtproto_response.h"
+#include "base/debug_log.h"
 
 #include <td/telegram/ClientInternal.h>
 #include <td/telegram/Client.h>
@@ -43,25 +44,22 @@ constexpr int kMaxUploadPartRetries = 5;
 using UploadPartId = std::pair<td::int64, td::int32>;
 
 // (file_id, part) of an upload-part query, for retry accounting; nullopt for
-// anything that isn't a raw saveFilePart/saveBigFilePart. Reads the serialized
-// telegram_api function (not gzipped at this layer), so it must be called on
-// the scheduler thread where the NetQuery's bytes are available.
+// anything that isn't a raw saveFilePart/saveBigFilePart.
 [[nodiscard]] std::optional<UploadPartId> UploadPartKey(
-		const td::BufferSlice &query) {
-	if (query.size() < 16) {
+		const td::ExternalQuery &data) {
+	if (data.gzip || data.query.size() < 16) {
 		return std::nullopt;
 	}
-	const auto *bytes = reinterpret_cast<const char *>(query.data());
 	td::uint32 ctor = 0;
-	memcpy(&ctor, bytes, sizeof(ctor));
+	memcpy(&ctor, data.query.data(), sizeof(ctor));
 	if (ctor != kSaveBigFilePartConstructor
 		&& ctor != kSaveFilePartConstructor) {
 		return std::nullopt;
 	}
 	td::int64 fileId = 0;
 	td::int32 part = 0;
-	memcpy(&fileId, bytes + 4, sizeof(fileId));
-	memcpy(&part, bytes + 12, sizeof(part));
+	memcpy(&fileId, data.query.data() + 4, sizeof(fileId));
+	memcpy(&part, data.query.data() + 12, sizeof(part));
 	return std::make_pair(fileId, part);
 }
 
@@ -84,12 +82,12 @@ using UploadPartId = std::pair<td::int64, td::int32>;
 // Build an MTP::details::SerializedRequest from raw TL bytes.
 // The raw bytes are the serialized telegram_api::Function.
 [[nodiscard]] MTP::details::SerializedRequest BuildSerializedRequest(
-		const td::BufferSlice &queryData,
-		td::NetQuery::GzipFlag gzipFlag) {
+		td::Slice queryData,
+		bool gzipOn) {
 	const auto *src = reinterpret_cast<const char *>(queryData.data());
 	const auto srcSize = static_cast<uint32>(queryData.size());
 
-	if (gzipFlag == td::NetQuery::GzipFlag::On) {
+	if (gzipOn) {
 		// Wrap in gzip_packed TL constructor:
 		// constructor_id (4 bytes) + TL string (length-prefixed)
 		const auto tlStringPadding = ((srcSize + 3) & ~3u) - srcSize;
@@ -166,13 +164,7 @@ using UploadPartId = std::pair<td::int64, td::int32>;
 
 struct TdLibBridge::Private {
 	struct PendingQuery {
-		td::NetQueryPtr query;
-		int32 rawDcId = 0;
-		td::NetQuery::Type type = td::NetQuery::Type::Common;
-		MTP::details::SerializedRequest serialized;
-		// Set (on the scheduler thread, from the query bytes) when this is an
-		// upload part, so a transient failure can be retried per-part.
-		std::optional<UploadPartId> uploadPart;
+		td::ExternalQuery data;
 	};
 	struct ClientState {
 		MTP::Instance *mtp = nullptr;
@@ -181,14 +173,14 @@ struct TdLibBridge::Private {
 
 	std::mutex mutex;
 	base::flat_map<int, ClientState> clients;
-	uint64 nextBridgeId = 1;
 
-	// requestId -> the in-flight TDLib query, held until MTP responds and then
-	// finished on its scheduler thread.  uploadPart carries the (file_id, part)
-	// for upload parts so a transient failure can be retried per-part.
+	// requestId -> the in-flight query.  We never hold a NetQueryPtr here: the
+	// query stays inside TDLib, keyed by its id, and completion crosses back as
+	// a plain id.  uploadPart is set when this is an upload part, so a transient
+	// transport failure can be retried per-part instead of failing the file.
 	struct Sent {
 		int clientId = 0;
-		td::NetQueryPtr query;
+		uint64 queryId = 0;
 		std::optional<UploadPartId> uploadPart;
 	};
 	base::flat_map<mtpRequestId, Sent> sentQueries;
@@ -197,16 +189,13 @@ struct TdLibBridge::Private {
 	// TDLib's FileUploader. Dropped once the part finally succeeds or aborts.
 	base::flat_map<UploadPartId, int> uploadPartAttempts;
 
-	// Incoming queries stashed here so that the Qt queued lambda
-	// only carries a plain uint64 id — no NetQueryPtr.  This avoids
-	// crashes when Qt destroys pending events during QObject teardown
-	// (the NetQueryPtr destructor would touch TDLib's actor system
-	// which may already be shut down).
-	uint64 nextIncomingId = 1;
 	struct IncomingEntry {
-		td::int32 clientId;
+		int clientId = 0;
 		PendingQuery pending;
 	};
+	// Queries stashed between the TDLib scheduler thread and the Qt thread.
+	// Only the plain ExternalQuery crosses; the owning NetQuery is held inside
+	// TDLib.
 	base::flat_map<uint64, IncomingEntry> incoming;
 
 	void sendToMtp(TdLibBridge *bridge, int clientId, PendingQuery &&pending);
@@ -240,33 +229,24 @@ void TdLibBridge::releaseAllQueries() {
 		return result;
 	};
 
-	// Finish all incoming (stashed but not yet dispatched) queries.  set_error
-	// and delivery run on the owning client's scheduler thread.
+	// Finish all stashed-but-not-yet-dispatched queries.  set_error and
+	// delivery happen inside TDLib on a scheduler thread; we pass only the id.
 	for (auto &[id, entry] : _d->incoming) {
-		td::complete_external_query(
-			entry.clientId,
-			std::move(entry.pending.query),
-			shuttingDown());
+		td::complete_external_query(entry.clientId, id, shuttingDown());
 	}
 	_d->incoming.clear();
 
 	// Finish all queries waiting for the MTP instance.
 	for (auto &[clientId, state] : _d->clients) {
 		for (auto &p : state.pendingBeforeMtp) {
-			td::complete_external_query(
-				clientId,
-				std::move(p.query),
-				shuttingDown());
+			td::complete_external_query(clientId, p.data.id, shuttingDown());
 		}
 		state.pendingBeforeMtp.clear();
 	}
 
 	// Finish all in-flight queries (sent to MTP, waiting for response).
 	for (auto &[requestId, sent] : _d->sentQueries) {
-		td::complete_external_query(
-			sent.clientId,
-			std::move(sent.query),
-			shuttingDown());
+		td::complete_external_query(sent.clientId, sent.queryId, shuttingDown());
 	}
 	_d->sentQueries.clear();
 }
@@ -294,41 +274,22 @@ void TdLibBridge::removeClient(int tdlibClientId) {
 
 void TdLibBridge::registerExternalDispatch() {
 	td::set_external_dispatch(
-		[this](td::int32 clientId, td::NetQueryPtr query) {
-			// Called from TDLib's scheduler thread.  Serialize the request and
-			// read everything we need from the NetQuery here, on the scheduler
-			// thread; only plain data crosses to the Qt side.  The NetQueryPtr
-			// is stashed and never touched off the scheduler thread until it is
-			// finished on one.
-			Private::PendingQuery pending;
-			pending.rawDcId = query->dc_id().is_main()
-				? 0
-				: query->dc_id().get_raw_id();
-			pending.type = query->type();
-			pending.serialized = BuildSerializedRequest(
-				query->query(),
-				query->gzip_flag());
-			pending.uploadPart = UploadPartKey(query->query());
-			pending.query = std::move(query);
-
-			// Stash the query (which owns a NetQueryPtr) in a
-			// mutex-protected map and only pass a plain uint64 id
-			// through the Qt event queue.  This way, if the queued
-			// event is never delivered (e.g. during shutdown) its
-			// destructor won't touch TDLib's actor system.
-			uint64 incomingId;
+		[this](td::int32 clientId, td::ExternalQuery query) {
+			// Called from TDLib's scheduler thread.  We receive only plain data
+			// here -- the NetQuery stays inside TDLib, keyed by query.id.  Pass
+			// that id through the Qt event queue; nothing actor-owned crosses.
+			const auto id = query.id;
 			{
 				std::lock_guard<std::mutex> lock(_d->mutex);
-				incomingId = _d->nextIncomingId++;
-				_d->incoming.emplace(incomingId, Private::IncomingEntry{
+				_d->incoming.emplace(id, Private::IncomingEntry{
 					clientId,
-					std::move(pending),
+					Private::PendingQuery{ std::move(query) },
 				});
 			}
 
-			QMetaObject::invokeMethod(this, [this, incomingId]() {
+			QMetaObject::invokeMethod(this, [this, id]() {
 				std::lock_guard<std::mutex> lock(_d->mutex);
-				auto it = _d->incoming.find(incomingId);
+				auto it = _d->incoming.find(id);
 				if (it == _d->incoming.end()) {
 					return; // Already released during shutdown.
 				}
@@ -361,7 +322,8 @@ void TdLibBridge::Private::sendToMtp(
 	}
 	auto *mtp = it->second.mtp;
 
-	auto queryType = pending.type;
+	const auto queryId = pending.data.id;
+	auto queryType = static_cast<td::NetQuery::Type>(pending.data.type);
 
 	// Route uploads on the main connection instead of the shifted upload
 	// connection.  The shifted upload connection is unreliable for the queries
@@ -378,21 +340,23 @@ void TdLibBridge::Private::sendToMtp(
 		queryType = td::NetQuery::Type::Common;
 	}
 
-	const auto shiftedDcId = mapDcId(mtp, pending.rawDcId, queryType);
+	const auto shiftedDcId = mapDcId(mtp, pending.data.raw_dc_id, queryType);
 
-	// The request was serialized on the scheduler thread when the query was
-	// dispatched; here we only attach a request id and hand plain bytes to MTP.
-	auto serialized = std::move(pending.serialized);
+	auto serialized = BuildSerializedRequest(
+		pending.data.query,
+		pending.data.gzip);
+
 	const auto requestId = MTP::details::GetNextRequestId();
 	serialized->requestId = requestId;
 
-	// Hold the TDLib query until the response arrives.  It is never touched on
-	// this (Qt) thread: it is moved into complete_external_query, which finishes
-	// it on the owning client's scheduler thread.
+	// Remember which TDLib query this MTP request belongs to.  Only the id is
+	// held on this (Qt) thread; completion crosses back into TDLib by id.
+	// Note the (file_id, part) for upload parts so a transient failure can be
+	// retried per-part; identified from the query bytes, not the routed type.
 	sentQueries.emplace(requestId, Sent{
 		clientId,
-		std::move(pending.query),
-		pending.uploadPart,
+		queryId,
+		UploadPartKey(pending.data),
 	});
 
 	auto done = [this, requestId](const MTP::Response &response) -> bool {
@@ -401,7 +365,7 @@ void TdLibBridge::Private::sendToMtp(
 			return true;
 		}
 		const auto cId = it->second.clientId;
-		auto query = std::move(it->second.query);
+		const auto qId = it->second.queryId;
 		// Part succeeded -- drop any per-part retry accounting.
 		if (it->second.uploadPart) {
 			uploadPartAttempts.take(*it->second.uploadPart);
@@ -423,7 +387,7 @@ void TdLibBridge::Private::sendToMtp(
 			result.error_message = "Empty response";
 		}
 
-		td::complete_external_query(cId, std::move(query), std::move(result));
+		td::complete_external_query(cId, qId, std::move(result));
 		return true;
 	};
 
@@ -435,9 +399,18 @@ void TdLibBridge::Private::sendToMtp(
 			return true;
 		}
 		const auto cId = it->second.clientId;
-		auto query = std::move(it->second.query);
-		const auto uploadPart = it->second.uploadPart;
-		sentQueries.erase(it);
+		const auto qId = it->second.queryId;
+
+		// Surface every failure (code + type, and the part for uploads) so
+		// throttling (FLOOD_WAIT/SLOWMODE) vs. genuine errors (INPUT_FETCH_FAIL,
+		// FILE_PART_*) is visible in the log instead of only as a TDLib send
+		// failure with no context.
+		::base::LogWriteMain(QString("TdBridge: query failed: code %1, type %2%3"
+			).arg(error.code()
+			).arg(error.type()
+			).arg(it->second.uploadPart
+				? u" [upload part %1]"_q.arg(it->second.uploadPart->second)
+				: QString()));
 
 		// Translate a transient transport failure on an upload part into
 		// NetQuery::Error::Canceled, which makes TDLib's FileUploader re-issue
@@ -446,17 +419,16 @@ void TdLibBridge::Private::sendToMtp(
 		// and caps the attempts. Permanent errors -- including throttling's
 		// 400 INPUT_FETCH_FAIL and 420 flood -- pass through so the file aborts.
 		auto reportCanceled = false;
-		if (uploadPart && IsTransientUploadError(error)) {
-			auto &attempts = uploadPartAttempts[*uploadPart];
+		if (it->second.uploadPart && IsTransientUploadError(error)) {
+			auto &attempts = uploadPartAttempts[*it->second.uploadPart];
 			if (attempts < kMaxUploadPartRetries) {
 				++attempts;
 				reportCanceled = true;
 			} else {
-				uploadPartAttempts.take(*uploadPart);
+				uploadPartAttempts.take(*it->second.uploadPart);
 			}
-		} else if (uploadPart) {
-			uploadPartAttempts.take(*uploadPart);
 		}
+		sentQueries.erase(it);
 
 		auto result = td::ExternalQueryResult();
 		result.is_ok = false;
@@ -468,7 +440,7 @@ void TdLibBridge::Private::sendToMtp(
 			result.error_message = error.type().toStdString();
 		}
 
-		td::complete_external_query(cId, std::move(query), std::move(result));
+		td::complete_external_query(cId, qId, std::move(result));
 		return true;
 	};
 

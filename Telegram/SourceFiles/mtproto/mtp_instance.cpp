@@ -1381,6 +1381,15 @@ bool Instance::Private::onErrorDefault(
 	const auto requestId = response.requestId;
 	const auto &type = error.type();
 	const auto code = error.code();
+	// Surface every server error that reaches the default handler — this is
+	// where FLOOD_WAIT / SLOWMODE / *_MIGRATE / 5xx are otherwise silently
+	// absorbed (delayed-and-resent), so without this there is no sign of
+	// throttling in the logs at all.
+	LOG(("MTP error (default-handled): req %1, dc-shift %2, code %3, type %4"
+		).arg(requestId
+		).arg(queryRequestByDc(requestId).value_or(0)
+		).arg(code
+		).arg(type));
 	auto badGuestDc = (code == 400) && (type == u"FILE_ID_INVALID"_q);
 	static const auto MigrateRegExp = QRegularExpression("^(FILE|PHONE|NETWORK|USER)_MIGRATE_(\\d+)$");
 	static const auto FloodWaitRegExp = QRegularExpression("^FLOOD_WAIT_(\\d+)$");
