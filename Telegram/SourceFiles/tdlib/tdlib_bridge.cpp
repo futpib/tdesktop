@@ -20,11 +20,66 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QMetaObject>
 
 #include <mutex>
+#include <optional>
+#include <utility>
 
 namespace TdBridge {
 namespace {
 
 constexpr uint32 kGzipPackedConstructor = 0x3072cfa1;
+
+// upload.saveBigFilePart / upload.saveFilePart constructor ids. Both lay out
+// file_id (int64) at byte offset 4 and file_part (int32) at offset 12, so an
+// upload part can be keyed by (file_id, part) regardless of which is used.
+constexpr uint32 kSaveBigFilePartConstructor = 0xde7b673d;
+constexpr uint32 kSaveFilePartConstructor = 0xb304a621;
+
+// How many times a transient transport failure on a single upload part is
+// reported to TDLib as NetQuery::Error::Canceled -- which makes its
+// FileUploader re-issue just that part instead of aborting the whole file --
+// before we give up and let the real error through. Bounds the retry loop.
+constexpr int kMaxUploadPartRetries = 5;
+
+using UploadPartId = std::pair<td::int64, td::int32>;
+
+// (file_id, part) of an upload-part query, for retry accounting; nullopt for
+// anything that isn't a raw saveFilePart/saveBigFilePart. Reads the serialized
+// telegram_api function (not gzipped at this layer), so it must be called on
+// the scheduler thread where the NetQuery's bytes are available.
+[[nodiscard]] std::optional<UploadPartId> UploadPartKey(
+		const td::BufferSlice &query) {
+	if (query.size() < 16) {
+		return std::nullopt;
+	}
+	const auto *bytes = reinterpret_cast<const char *>(query.data());
+	td::uint32 ctor = 0;
+	memcpy(&ctor, bytes, sizeof(ctor));
+	if (ctor != kSaveBigFilePartConstructor
+		&& ctor != kSaveFilePartConstructor) {
+		return std::nullopt;
+	}
+	td::int64 fileId = 0;
+	td::int32 part = 0;
+	memcpy(&fileId, bytes + 4, sizeof(fileId));
+	memcpy(&part, bytes + 12, sizeof(part));
+	return std::make_pair(fileId, part);
+}
+
+// A transient transport-level failure that warrants retrying the part rather
+// than failing the whole upload. Server application errors (400 family,
+// including INPUT_FETCH_FAIL; 403; 420 flood -- which we must NOT hammer) are
+// treated as permanent and pass through so the file aborts as it should.
+[[nodiscard]] bool IsTransientUploadError(const MTP::Error &error) {
+	const auto code = error.code();
+	if (code < 0 || code == 500 || code == 503) {
+		return true;
+	}
+	const auto type = error.type();
+	return type.startsWith(u"TIMEOUT"_q)
+		|| type.startsWith(u"RPC_CALL_FAIL"_q)
+		|| type.startsWith(u"RPC_MCGET_FAIL"_q)
+		|| type == u"MSG_WAIT_FAILED"_q;
+}
 
 // Build an MTP::details::SerializedRequest from raw TL bytes.
 // The raw bytes are the serialized telegram_api::Function.
@@ -115,6 +170,9 @@ struct TdLibBridge::Private {
 		int32 rawDcId = 0;
 		td::NetQuery::Type type = td::NetQuery::Type::Common;
 		MTP::details::SerializedRequest serialized;
+		// Set (on the scheduler thread, from the query bytes) when this is an
+		// upload part, so a transient failure can be retried per-part.
+		std::optional<UploadPartId> uploadPart;
 	};
 	struct ClientState {
 		MTP::Instance *mtp = nullptr;
@@ -124,7 +182,20 @@ struct TdLibBridge::Private {
 	std::mutex mutex;
 	base::flat_map<int, ClientState> clients;
 	uint64 nextBridgeId = 1;
-	base::flat_map<mtpRequestId, std::pair<int, td::NetQueryPtr>> sentQueries;
+
+	// requestId -> the in-flight TDLib query, held until MTP responds and then
+	// finished on its scheduler thread.  uploadPart carries the (file_id, part)
+	// for upload parts so a transient failure can be retried per-part.
+	struct Sent {
+		int clientId = 0;
+		td::NetQueryPtr query;
+		std::optional<UploadPartId> uploadPart;
+	};
+	base::flat_map<mtpRequestId, Sent> sentQueries;
+
+	// (file_id, part) -> transient-failure retries already requested from
+	// TDLib's FileUploader. Dropped once the part finally succeeds or aborts.
+	base::flat_map<UploadPartId, int> uploadPartAttempts;
 
 	// Incoming queries stashed here so that the Qt queued lambda
 	// only carries a plain uint64 id — no NetQueryPtr.  This avoids
@@ -191,10 +262,10 @@ void TdLibBridge::releaseAllQueries() {
 	}
 
 	// Finish all in-flight queries (sent to MTP, waiting for response).
-	for (auto &[requestId, pair] : _d->sentQueries) {
+	for (auto &[requestId, sent] : _d->sentQueries) {
 		td::complete_external_query(
-			pair.first,
-			std::move(pair.second),
+			sent.clientId,
+			std::move(sent.query),
 			shuttingDown());
 	}
 	_d->sentQueries.clear();
@@ -237,6 +308,7 @@ void TdLibBridge::registerExternalDispatch() {
 			pending.serialized = BuildSerializedRequest(
 				query->query(),
 				query->gzip_flag());
+			pending.uploadPart = UploadPartKey(query->query());
 			pending.query = std::move(query);
 
 			// Stash the query (which owns a NetQueryPtr) in a
@@ -317,15 +389,23 @@ void TdLibBridge::Private::sendToMtp(
 	// Hold the TDLib query until the response arrives.  It is never touched on
 	// this (Qt) thread: it is moved into complete_external_query, which finishes
 	// it on the owning client's scheduler thread.
-	sentQueries.emplace(requestId, std::make_pair(clientId, std::move(pending.query)));
+	sentQueries.emplace(requestId, Sent{
+		clientId,
+		std::move(pending.query),
+		pending.uploadPart,
+	});
 
 	auto done = [this, requestId](const MTP::Response &response) -> bool {
 		auto it = sentQueries.find(requestId);
 		if (it == sentQueries.end()) {
 			return true;
 		}
-		const auto cId = it->second.first;
-		auto query = std::move(it->second.second);
+		const auto cId = it->second.clientId;
+		auto query = std::move(it->second.query);
+		// Part succeeded -- drop any per-part retry accounting.
+		if (it->second.uploadPart) {
+			uploadPartAttempts.take(*it->second.uploadPart);
+		}
 		sentQueries.erase(it);
 
 		auto result = td::ExternalQueryResult();
@@ -354,14 +434,39 @@ void TdLibBridge::Private::sendToMtp(
 		if (it == sentQueries.end()) {
 			return true;
 		}
-		const auto cId = it->second.first;
-		auto query = std::move(it->second.second);
+		const auto cId = it->second.clientId;
+		auto query = std::move(it->second.query);
+		const auto uploadPart = it->second.uploadPart;
 		sentQueries.erase(it);
+
+		// Translate a transient transport failure on an upload part into
+		// NetQuery::Error::Canceled, which makes TDLib's FileUploader re-issue
+		// just that part instead of aborting the whole (multi-thousand-part)
+		// upload. TDLib owns the retry; the bridge only reclassifies the error
+		// and caps the attempts. Permanent errors -- including throttling's
+		// 400 INPUT_FETCH_FAIL and 420 flood -- pass through so the file aborts.
+		auto reportCanceled = false;
+		if (uploadPart && IsTransientUploadError(error)) {
+			auto &attempts = uploadPartAttempts[*uploadPart];
+			if (attempts < kMaxUploadPartRetries) {
+				++attempts;
+				reportCanceled = true;
+			} else {
+				uploadPartAttempts.take(*uploadPart);
+			}
+		} else if (uploadPart) {
+			uploadPartAttempts.take(*uploadPart);
+		}
 
 		auto result = td::ExternalQueryResult();
 		result.is_ok = false;
-		result.error_code = error.code();
-		result.error_message = error.type().toStdString();
+		if (reportCanceled) {
+			result.error_code = td::NetQuery::Error::Canceled;
+			result.error_message = "Upload part transient failure, retrying";
+		} else {
+			result.error_code = error.code();
+			result.error_message = error.type().toStdString();
+		}
 
 		td::complete_external_query(cId, std::move(query), std::move(result));
 		return true;
