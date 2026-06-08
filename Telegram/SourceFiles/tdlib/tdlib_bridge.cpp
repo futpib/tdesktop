@@ -272,6 +272,31 @@ void TdLibBridge::removeClient(int tdlibClientId) {
 	_d->clients.erase(tdlibClientId);
 }
 
+void TdLibBridge::pushUpdates(
+		not_null<MTP::Instance*> instance,
+		const QByteArray &serialized) {
+	if (serialized.isEmpty()) {
+		return;
+	}
+	// Raw wire bytes of the server-pushed Updates, exactly as received on this
+	// connection.  We forward them verbatim: TDLib parses them with its own
+	// scheme, just as a native Session would -- no re-serialization, so no
+	// scheme-version round-trip risk.
+	const auto bytes = std::string(
+		serialized.constData(),
+		serialized.size());
+
+	MTP::Instance * const target = instance;
+	std::lock_guard<std::mutex> lock(_d->mutex);
+	for (const auto &[clientId, state] : _d->clients) {
+		if (state.mtp == target) {
+			// Only plain bytes cross into TDLib; the parse and delivery to
+			// UpdatesManager happen on the client's scheduler thread.
+			td::push_external_updates(clientId, bytes);
+		}
+	}
+}
+
 void TdLibBridge::registerExternalDispatch() {
 	td::set_external_dispatch(
 		[this](td::int32 clientId, td::ExternalQuery query) {

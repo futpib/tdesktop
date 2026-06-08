@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include <QtCore/QObject>
+#include <QtCore/QByteArray>
 
 #include <memory>
 
@@ -26,6 +27,14 @@ public:
 
 	void addClient(int tdlibClientId, not_null<MTP::Instance*> instance);
 	void removeClient(int tdlibClientId);
+
+	// Inject server-pushed updates received on `instance` into every TDLib
+	// client bound to it.  Inbound counterpart to registerExternalDispatch:
+	// external dispatch carries our queries out, this carries the server's
+	// pushes back in, so the client's update state no longer freezes.
+	void pushUpdates(
+		not_null<MTP::Instance*> instance,
+		const QByteArray &serialized);
 
 	// Registers this bridge as the TDLib external dispatch handler.
 	void registerExternalDispatch();

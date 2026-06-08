@@ -168,6 +168,12 @@ public:
 		return *_batterySaving;
 	}
 
+	// Forward server-pushed updates received on `instance` into any TDLib
+	// client riding that connection (inbound counterpart to external dispatch).
+	void pushTdLibUpdates(
+		not_null<MTP::Instance*> instance,
+		const QByteArray &serialized);
+
 	// Windows interface.
 	bool hasActiveWindow(not_null<Main::Session*> session) const;
 	[[nodiscard]] bool savingPositionFor(

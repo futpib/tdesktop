@@ -2222,4 +2222,12 @@ void Application::removeTdLibAccount(int index) {
 	_tdlibAccounts.erase(it);
 }
 
+void Application::pushTdLibUpdates(
+		not_null<MTP::Instance*> instance,
+		const QByteArray &serialized) {
+	if (_tdlibBridge) {
+		_tdlibBridge->pushUpdates(instance, serialized);
+	}
+}
+
 } // namespace Core

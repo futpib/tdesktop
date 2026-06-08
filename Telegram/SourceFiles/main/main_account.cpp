@@ -452,7 +452,19 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 	_mtpFields.mainDcId = _mtp->mainDcId();
 
 	_mtp->setUpdatesHandler([=](const MTP::Response &message) {
-		checkForUpdates(message) || checkForNewSession(message);
+		if (checkForUpdates(message)) {
+			// Mirror the pushed update into any TDLib client riding this
+			// connection: external dispatch carries our queries out, this
+			// carries the server's pushes back in.  Forward the raw wire
+			// bytes verbatim so TDLib parses them with its own scheme.
+			Core::App().pushTdLibUpdates(
+				_mtp.get(),
+				QByteArray(
+					reinterpret_cast<const char*>(message.reply.constData()),
+					int(message.reply.size() * sizeof(mtpPrime))));
+		} else {
+			checkForNewSession(message);
+		}
 	});
 	_mtp->setGlobalFailHandler([=](const MTP::Error &, const MTP::Response &) {
 		if (const auto session = maybeSession()) {
