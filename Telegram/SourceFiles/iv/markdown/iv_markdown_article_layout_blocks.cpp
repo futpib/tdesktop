@@ -299,10 +299,12 @@ void BuildOrReuseCachedTextLeaf(
 			}
 			*leaf = std::move(i->second.leaf);
 			pool->entries.erase(i);
+			SetTextLeafSpoilerLinkFilter(leaf, context.spoilerLinkFilter);
 			return;
 		}
 	}
 	builder(leaf, syntaxHighlightProcessId);
+	SetTextLeafSpoilerLinkFilter(leaf, context.spoilerLinkFilter);
 }
 
 [[nodiscard]] LaidOutTableCell InitializeTableCellLayout(
@@ -612,7 +614,8 @@ void PopulateCodeBlockLeaf(
 		bool allowAsyncSyntaxHighlighting,
 		CodeBlockSyntaxHighlightTracker *syntaxHighlightTracker,
 		Fn<void()> repaint,
-		Fn<void(QRect)> repaintRect) {
+		Fn<void(QRect)> repaintRect,
+		Fn<bool(const ClickContext&)> spoilerLinkFilter) {
 	auto display = CodeBlockDisplayText(codeText);
 	auto highlightRequest = TextWithEntities();
 	highlightRequest.text = display.text;
@@ -648,7 +651,8 @@ void PopulateCodeBlockLeaf(
 		mediaRuntime,
 		CodeTextMinResizeWidth(st),
 		std::move(repaint),
-		std::move(repaintRect));
+		std::move(repaintRect),
+		std::move(spoilerLinkFilter));
 	BindLinks(leaf, codeLinks);
 	if (syntaxHighlightProcessId) {
 		*syntaxHighlightProcessId = processId;
@@ -709,7 +713,10 @@ void PopulateCodeBlockLeaf(
 	return std::clamp(limit, 1, std::max(availableWidth, 1));
 }
 
-void ApplyMediaBlockGeometry(LaidOutBlock *block, QRect geometry) {
+void ApplyMediaBlockGeometry(
+		LaidOutBlock *block,
+		QRect geometry,
+		const style::Markdown &st) {
 	if (!block->mediaBlock) {
 		return;
 	}
@@ -722,7 +729,15 @@ void ApplyMediaBlockGeometry(LaidOutBlock *block, QRect geometry) {
 		actual = block->mediaBlock->geometry();
 	}
 	block->mediaRect = actual;
-	block->firstLineBaseline = block->mediaBlock->firstLineBaseline();
+
+	// Media blocks without text report their top as the baseline, while
+	// the consumers (like list item marker placement) expect a text line
+	// baseline. Treat the media top as the top of a normal text line, so
+	// that markers are placed as if a text line started at the media top.
+	block->firstLineBaseline = std::max(
+		block->mediaBlock->firstLineBaseline(),
+		TextLineBaseline(st.body, block->mediaRect.y()));
+
 	block->visibleMediaRect = block->mediaRect;
 }
 
@@ -1793,7 +1808,8 @@ int CodeBlockPreferredWidth(
 				context.allowAsyncSyntaxHighlighting,
 				context.syntaxHighlightTracker,
 				context.repaint,
-				context.repaintRect);
+				context.repaintRect,
+				context.spoilerLinkFilter);
 		},
 		[](const Ui::Text::String &leaf,
 				Spellchecker::HighlightProcessId) {
@@ -2031,15 +2047,6 @@ const style::TextStyle &TextStyleFor(
 	return st.heading6;
 }
 
-int BlockMaxRight(const std::vector<LaidOutBlock> &blocks) {
-	auto result = 0;
-	for (const auto &block : blocks) {
-		result = std::max(result, block.outer.right() + 1);
-		result = std::max(result, BlockMaxRight(block.children));
-	}
-	return result;
-}
-
 void ApplyPreparedEditSources(
 		LaidOutBlock *block,
 		const PreparedBlock &prepared) {
@@ -2057,7 +2064,8 @@ void RepopulateCodeBlockLeaf(
 		bool allowAsyncSyntaxHighlighting,
 		CodeBlockSyntaxHighlightTracker *syntaxHighlightTracker,
 		Fn<void()> repaint,
-		Fn<void(QRect)> repaintRect) {
+		Fn<void(QRect)> repaintRect,
+		Fn<bool(const ClickContext&)> spoilerLinkFilter) {
 	PopulateCodeBlockLeaf(
 		&block.leaf,
 		&block.syntaxHighlightProcessId,
@@ -2071,7 +2079,8 @@ void RepopulateCodeBlockLeaf(
 		allowAsyncSyntaxHighlighting,
 		syntaxHighlightTracker,
 		std::move(repaint),
-		std::move(repaintRect));
+		std::move(repaintRect),
+		std::move(spoilerLinkFilter));
 }
 
 void UpdateLaidOutLeafContent(
@@ -2132,7 +2141,8 @@ void UpdateLaidOutLeafContent(
 			context.allowAsyncSyntaxHighlighting,
 			context.syntaxHighlightTracker,
 			context.repaint,
-			context.repaintRect);
+			context.repaintRect,
+			context.spoilerLinkFilter);
 		if (prepared.text.text.isEmpty()
 			&& !prepared.editPlaceholderText.isEmpty()) {
 			BuildOrReuseEditPlaceholderLeaf(
@@ -2523,7 +2533,8 @@ LaidOutBlock LayoutCodeBlock(
 				allowAsyncSyntaxHighlighting,
 				syntaxHighlightTracker,
 				context.repaint,
-				context.repaintRect);
+				context.repaintRect,
+				context.spoilerLinkFilter);
 		});
 	BindLinks(&block.leaf, block.codeLinks);
 	if (!block.syntaxHighlightProcessId
@@ -4039,7 +4050,7 @@ LaidOutBlock LayoutGroupedMediaBlock(
 	block->mediaRect = QRect(mediaLeft, mediaTop, mediaWidth, mediaHeight);
 	block->visibleMediaRect = block->mediaRect;
 	if (block->mediaBlock) {
-		ApplyMediaBlockGeometry(block, block->mediaRect);
+		ApplyMediaBlockGeometry(block, block->mediaRect, st);
 	}
 	auto bottom = block->mediaRect.y() + block->mediaRect.height()
 		+ padding.bottom();
@@ -4090,7 +4101,7 @@ LaidOutBlock LayoutGroupedMediaBlock(
 	block->mediaRect = QRect(left, top, blockWidth, cardHeight);
 	block->visibleMediaRect = block->mediaRect;
 	if (block->mediaBlock) {
-		ApplyMediaBlockGeometry(block, block->mediaRect);
+		ApplyMediaBlockGeometry(block, block->mediaRect, st);
 	}
 	auto bottom = top + cardHeight;
 	if (!LayoutMediaCaptionGeometry(
