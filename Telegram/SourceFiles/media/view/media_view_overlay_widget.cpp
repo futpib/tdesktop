@@ -32,6 +32,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/buttons.h"
 #include "ui/layers/layer_manager.h"
 #include "ui/text/text_utilities.h"
+#include "ui/chat/chat_style.h"
 #include "ui/platform/ui_platform_window_title.h"
 #include "ui/toast/toast.h"
 #include "ui/text/format_values.h"
@@ -333,6 +334,28 @@ QWidget *PipDelegate::pipParentWidget() {
 		: std::make_optional(std::move(result));
 }
 
+void RefreshCaptionQuoteCaches(
+		Ui::Text::QuotePaintCache &blockquote,
+		Ui::Text::QuotePaintCache &pre) {
+	const auto withAlpha = [](QColor color, float64 opacity) {
+		color.setAlpha(int(opacity * 255));
+		return color;
+	};
+
+	const auto accent = st::mediaviewTextLinkFg->c;
+	blockquote.bg = withAlpha(accent, Ui::kDefaultBgOpacity);
+	blockquote.outlines[0] = withAlpha(accent, Ui::kDefaultOutline1Opacity);
+	blockquote.outlines[1] = blockquote.outlines[2] = QColor(0, 0, 0, 0);
+	blockquote.icon = accent;
+
+	const auto mono = st::mediaviewCaptionFg->c;
+	pre.bg = QColor(0, 0, 0, 192);
+	pre.outlines[0] = withAlpha(mono, Ui::kDefaultOutline1Opacity);
+	pre.outlines[1] = pre.outlines[2] = QColor(0, 0, 0, 0);
+	pre.header = withAlpha(mono, Ui::kDefaultOutline2Opacity);
+	pre.icon = withAlpha(mono, Ui::kDefaultOutline3Opacity);
+}
+
 } // namespace
 
 class OverlayWidget::SponsoredButton : public Ui::RippleButton {
@@ -552,6 +575,10 @@ public:
 		return { SendMenu::Type::SilentOnly };
 	}
 
+	Window::SessionController *resolveWindow() const override {
+		return _widget->findWindow();
+	}
+
 	bool showMediaPreview(
 			Data::FileOrigin origin,
 			not_null<DocumentData*> document) const override {
@@ -640,6 +667,8 @@ OverlayWidget::OverlayWidget()
 }) {
 	_layerBg->setStyleOverrides(&st::groupCallBox, &st::groupCallLayerBox);
 	_layerBg->setHideByBackgroundClick(true);
+
+	_recognition.setSources(&_recognitionResult, &_staticContent);
 
 	CrashReports::SetAnnotation("OpenGL Renderer", "[not-initialized]");
 
@@ -2075,7 +2104,14 @@ void OverlayWidget::fillContextMenuActions(
 			[=] { showInFolder(); },
 			&st::mediaMenuIconShowInFolder);
 	}
-	if (!hasCopyMediaRestriction()) {
+	const auto hasRecognitionSelection = _recognition.hasSelection();
+	if (hasRecognitionSelection) {
+		addAction(
+			tr::lng_context_copy_selected(tr::now),
+			[=] { copyRecognitionSelection(); },
+			&st::mediaMenuIconCopy);
+	}
+	if (!hasRecognitionSelection && !hasCopyMediaRestriction()) {
 		if ((_document && documentContentShown()) || (_photo && _photoMedia->loaded())) {
 			addAction(
 				((_document && _streamed)
@@ -3468,6 +3504,9 @@ void OverlayWidget::showMediaOverview() {
 
 void OverlayWidget::recognize() {
 	_showRecognitionResults = !_showRecognitionResults;
+	if (!_showRecognitionResults) {
+		clearRecognitionSelection();
+	}
 	_recognitionAnimation.start(
 		[=] { update(); },
 		_showRecognitionResults ? 0. : 1.,
@@ -3962,9 +4001,9 @@ void OverlayWidget::refreshFromLabel() {
 
 void OverlayWidget::refreshCaption() {
 	_caption = Ui::Text::String();
-	const auto caption = StripQuoteEntities([&] {
+	const auto caption = [&] {
 		if (_stories) {
-			return _stories->captionText();
+			return StripQuoteEntities(_stories->captionText());
 		} else if (_message) {
 			if (const auto caption = InstantViewMediaCaption(
 					_message,
@@ -4002,7 +4041,7 @@ void OverlayWidget::refreshCaption() {
 			return _message->translatedText();
 		}
 		return TextWithEntities();
-	}());
+	}();
 	if (caption.text.isEmpty()) {
 		if (_streamed && _streamed->controls) {
 			_streamed->controls->setTimestamps({});
@@ -4047,6 +4086,15 @@ void OverlayWidget::refreshCaption() {
 		_caption.setSpoilerLinkFilter([=](const ClickContext &context) {
 			return (weak != nullptr);
 		});
+	}
+	if (_caption.hasCollapsedBlockquots()) {
+		_caption.setBlockquoteExpandCallback(crl::guard(_widget, [=](
+				int index,
+				bool expanded) {
+			const auto wasGeometry = captionGeometry();
+			refreshCaptionGeometry();
+			update(wasGeometry.united(captionGeometry()));
+		}));
 	}
 }
 
@@ -4408,7 +4456,9 @@ void OverlayWidget::displayPhoto(
 		_recognitionResult = {};
 		_recognitionPendingSessionUniqueId = 0;
 		_recognitionPendingPhotoId = 0;
+		_recognitionPendingDocumentId = 0;
 		_recognitionRetryOnLarge = false;
+		clearRecognitionSelection();
 	}
 
 	refreshMediaViewer();
@@ -4486,7 +4536,9 @@ void OverlayWidget::displayDocument(
 		_recognitionResult = {};
 		_recognitionPendingSessionUniqueId = 0;
 		_recognitionPendingPhotoId = 0;
+		_recognitionPendingDocumentId = 0;
 		_recognitionRetryOnLarge = false;
+		clearRecognitionSelection();
 	}
 
 	_touchbarDisplay.fire(TouchBarItemType::None);
@@ -4536,6 +4588,8 @@ void OverlayWidget::displayDocument(
 		}
 	}
 	refreshCaption();
+
+	tryStartTextRecognition();
 
 	const auto docGeneric = Layout::DocumentGenericPreview::Create(_document);
 	_docExt = docGeneric.ext;
@@ -5825,9 +5879,15 @@ void OverlayWidget::validatePhotoCurrentImage() {
 void OverlayWidget::tryStartTextRecognition() {
 	if (_stories
 		|| !_session
-		|| !_photo
-		|| !_photoMedia
 		|| !Platform::TextRecognition::IsAvailable()) {
+		return;
+	}
+	const auto forPhoto = (_photo != nullptr) && (_photoMedia != nullptr);
+	const auto forDocument = !_photo
+		&& _document
+		&& _document->isImage()
+		&& !_staticContent.isNull();
+	if (!forPhoto && !forDocument) {
 		return;
 	}
 	const auto cache = RecognitionCache();
@@ -5836,7 +5896,8 @@ void OverlayWidget::tryStartTextRecognition() {
 	}
 	const auto id = RecognitionId{
 		.sessionUniqueId = _session->uniqueId(),
-		.photoId = _photo->id,
+		.photoId = forPhoto ? _photo->id : PhotoId(),
+		.documentId = forDocument ? _document->id : DocumentId(),
 	};
 	if (const auto cached = cache->find(id); cached != cache->end()) {
 		_recognitionRetryOnLarge = false;
@@ -5849,17 +5910,29 @@ void OverlayWidget::tryStartTextRecognition() {
 		return;
 	}
 	if (_recognitionPendingSessionUniqueId == id.sessionUniqueId
-		&& _recognitionPendingPhotoId == id.photoId) {
+		&& _recognitionPendingPhotoId == id.photoId
+		&& _recognitionPendingDocumentId == id.documentId) {
 		_recognitionRetryOnLarge = false;
 		return;
 	}
-	_photoMedia->wanted(Data::PhotoSize::Large, fileOrigin());
-	const auto image = _photoMedia->image(Data::PhotoSize::Large);
-	if (!image) {
-		_recognitionRetryOnLarge = true;
-		return;
+	auto original = QImage();
+	auto recognizeSize = QSize();
+	if (forPhoto) {
+		_photoMedia->wanted(Data::PhotoSize::Large, fileOrigin());
+		if (const auto image = _photoMedia->image(Data::PhotoSize::Large)) {
+			original = image->original();
+		}
+	} else {
+		const auto ratio = style::DevicePixelRatio();
+		const auto percent = style::Scale();
+		const auto target = QSize(
+			(_staticContent.width() * 100) / (ratio * percent),
+			(_staticContent.height() * 100) / (ratio * percent));
+		original = _staticContent;
+		if (!target.isEmpty() && target != original.size()) {
+			recognizeSize = target;
+		}
 	}
-	const auto original = image->original();
 	if (original.isNull()) {
 		_recognitionRetryOnLarge = true;
 		return;
@@ -5867,9 +5940,16 @@ void OverlayWidget::tryStartTextRecognition() {
 	_recognitionRetryOnLarge = false;
 	_recognitionPendingSessionUniqueId = id.sessionUniqueId;
 	_recognitionPendingPhotoId = id.photoId;
+	_recognitionPendingDocumentId = id.documentId;
 	const auto weak = base::make_weak(_widget);
 	crl::async([=] {
-		auto result = Platform::TextRecognition::RecognizeText(original);
+		const auto input = recognizeSize.isEmpty()
+			? original
+			: original.scaled(
+				recognizeSize,
+				Qt::IgnoreAspectRatio,
+				Qt::SmoothTransformation);
+		auto result = Platform::TextRecognition::RecognizeText(input);
 		crl::on_main(weak, [=, result = std::move(result)]() mutable {
 			const auto cache = RecognitionCache();
 			if (!cache) {
@@ -5877,16 +5957,20 @@ void OverlayWidget::tryStartTextRecognition() {
 			}
 			const auto pendingMatches = (_recognitionPendingSessionUniqueId
 				== id.sessionUniqueId)
-				&& (_recognitionPendingPhotoId == id.photoId);
+				&& (_recognitionPendingPhotoId == id.photoId)
+				&& (_recognitionPendingDocumentId == id.documentId);
 			if (pendingMatches) {
 				_recognitionPendingSessionUniqueId = 0;
 				_recognitionPendingPhotoId = 0;
+				_recognitionPendingDocumentId = 0;
 			}
 			(*cache)[id] = result;
-			if (!_session
-				|| !_photo
-				|| (_session->uniqueId() != id.sessionUniqueId)
-				|| (_photo->id != id.photoId)) {
+			const auto stillSame = _session
+				&& (_session->uniqueId() == id.sessionUniqueId)
+				&& (id.photoId
+					? (_photo && _photo->id == id.photoId)
+					: (_document && _document->id == id.documentId));
+			if (!stillSame) {
 				return;
 			}
 			_recognitionResult = std::move(result);
@@ -6760,10 +6844,13 @@ void OverlayWidget::paintCaptionContent(
 	}
 	if (inner.intersects(clip)) {
 		p.setPen(st::mediaviewCaptionFg);
+		RefreshCaptionQuoteCaches(_captionBlockquoteCache, _captionPreCache);
 		_caption.draw(p, {
 			.position = inner.topLeft(),
 			.availableWidth = inner.width(),
 			.palette = &st::mediaviewTextPalette,
+			.pre = &_captionPreCache,
+			.blockquote = &_captionBlockquoteCache,
 			.spoiler = Ui::Text::DefaultSpoilerCache(),
 			.pausedEmoji = On(PowerSaving::kEmojiChat),
 			.pausedSpoiler = On(PowerSaving::kChatSpoiler),
@@ -6924,7 +7011,9 @@ void OverlayWidget::handleKeyPress(not_null<QKeyEvent*> e) {
 	} else if (e == QKeySequence::Save || e == QKeySequence::SaveAs) {
 		saveAs();
 	} else if (key == Qt::Key_Copy || (key == Qt::Key_C && ctrl)) {
-		copyMedia();
+		if (!copyRecognitionSelection()) {
+			copyMedia();
+		}
 	} else if (key == Qt::Key_Enter
 		|| key == Qt::Key_Return
 		|| key == Qt::Key_Space) {
@@ -7398,6 +7487,19 @@ void OverlayWidget::handleMousePress(
 					_speedBoostHoldTimer.callOnce(
 						st::mediaviewSpeedBoostHoldDelay);
 				}
+			} else if (const auto at = ((_showRecognitionResults
+					&& _recognitionResult.success
+					&& !_recognitionResult.items.empty())
+					? _recognition.positionAt(
+						position,
+						finalContentRect(),
+						_rotation,
+						false)
+					: RecognitionPosition())
+				; at.item >= 0) {
+				_recognition.start(at);
+				_mStart = position;
+				update();
 			} else if (!_saveMsg.contains(position) || !isSaveMsgShown()) {
 				_pressed = true;
 				_dragging = 0;
@@ -7491,6 +7593,36 @@ const -> std::optional<Platform::TextRecognition::RectWithText> {
 	return std::nullopt;
 }
 
+void OverlayWidget::updateRecognitionSelection(QPoint position) {
+	const auto focus = _recognition.positionAt(
+		position,
+		finalContentRect(),
+		_rotation,
+		true);
+	if (_recognition.updateFocus(focus)) {
+		update();
+	}
+}
+
+void OverlayWidget::clearRecognitionSelection() {
+	if (_recognition.clear()) {
+		update();
+	}
+}
+
+bool OverlayWidget::copyRecognitionSelection() {
+	const auto text = _recognition.selectedText();
+	if (text.isEmpty()) {
+		return false;
+	}
+	TextUtilities::SetClipboardText(TextForMimeData::Simple(text));
+	showSaveMsgToastWith(
+		QString(),
+		{ tr::lng_text_copied(tr::now) },
+		1000);
+	return true;
+}
+
 void OverlayWidget::handleMouseMove(QPoint position) {
 	if (_speedBoostFromMouse && !_speedBoostActive) {
 		if (_speedBoostHoldTimer.isActive()) {
@@ -7520,11 +7652,21 @@ void OverlayWidget::handleMouseMove(QPoint position) {
 			>= st::mediaviewDeltaFromLastAction)) {
 		_lastAction = QPoint(-st::mediaviewDeltaFromLastAction, -st::mediaviewDeltaFromLastAction);
 	}
+	if (_recognition.selecting()) {
+		if (!_recognition.dragged()
+			&& ((position - _mStart).manhattanLength()
+				>= QApplication::startDragDistance())) {
+			_recognition.setDragged(true);
+		}
+		updateRecognitionSelection(position);
+		setCursor(style::cur_text);
+		return;
+	}
 	if (_recognitionResult.success
 		&& !_recognitionResult.items.empty()
 		&& _showRecognitionResults) {
 		if (scaledRecognitionRect(position)) {
-			setCursor(style::cur_pointer);
+			setCursor(style::cur_text);
 		} else if (!_pressed) {
 			setCursor(style::cur_default);
 		}
@@ -7772,13 +7914,27 @@ void OverlayWidget::handleMouseRelease(
 		return;
 	}
 
+	if (_recognition.selecting()) {
+		_recognition.setSelecting(false);
+		if (_recognition.dragged()) {
+			_recognition.setDragged(false);
+			_over = _down = Over::None;
+			_pressed = false;
+			_dragging = 0;
+			return;
+		}
+		_recognition.setDragged(false);
+		clearRecognitionSelection();
+	}
+
 	if (_recognitionResult.success
 		&& !_dragging
 		&& !_recognitionResult.items.empty()
 		&& _showRecognitionResults
 		&& button == Qt::LeftButton) {
 		if (const auto result = scaledRecognitionRect(position)) {
-			QGuiApplication::clipboard()->setText(result->text);
+			TextUtilities::SetClipboardText(
+				TextForMimeData::Simple(result->text));
 			showSaveMsgToastWith(
 				QString(),
 				{ tr::lng_text_copied(tr::now) },
@@ -7861,7 +8017,9 @@ void OverlayWidget::handleMouseRelease(
 			&& position.y() > st::mediaviewTitleButton.height
 			&& (position - _lastAction).manhattanLength()
 				>= st::mediaviewDeltaFromLastAction) {
-			if (_themePreviewShown) {
+			if (_recognition.hasSelection()) {
+				clearRecognitionSelection();
+			} else if (_themePreviewShown) {
 				if (!_themePreviewRect.contains(position)) {
 					close();
 				}
@@ -8097,14 +8255,15 @@ void OverlayWidget::applyHideWindowWorkaround() {
 }
 
 Window::SessionController *OverlayWidget::findWindow(bool switchTo) const {
-	if (!_session) {
+	const auto session = _session ? _session : _storiesSession;
+	if (!session) {
 		return nullptr;
 	}
 
 	const auto window = _openedFrom.get();
 	if (window) {
 		if (const auto controller = window->sessionController()) {
-			if (&controller->session() == _session) {
+			if (&controller->session() == session) {
 				return controller;
 			}
 		}
@@ -8112,7 +8271,7 @@ Window::SessionController *OverlayWidget::findWindow(bool switchTo) const {
 
 	if (switchTo) {
 		auto controllerPtr = (Window::SessionController*)nullptr;
-		const auto account = not_null(&_session->account());
+		const auto account = not_null(&session->account());
 		const auto sessionWindow = Core::App().windowFor(account);
 		const auto anyWindow = (sessionWindow
 			&& &sessionWindow->account() == account)
@@ -8122,7 +8281,7 @@ Window::SessionController *OverlayWidget::findWindow(bool switchTo) const {
 			: sessionWindow;
 		if (anyWindow) {
 			anyWindow->invokeForSessionController(
-				&_session->account(),
+				&session->account(),
 				_history ? _history->peer.get() : nullptr,
 				[&](not_null<Window::SessionController*> newController) {
 					controllerPtr = newController;
@@ -8182,7 +8341,9 @@ void OverlayWidget::clearAfterHide() {
 	_recognitionResult = {};
 	_recognitionPendingSessionUniqueId = 0;
 	_recognitionPendingPhotoId = 0;
+	_recognitionPendingDocumentId = 0;
 	_recognitionRetryOnLarge = false;
+	clearRecognitionSelection();
 	_body->hide();
 	clearStreaming();
 	destroyThemePreview();
