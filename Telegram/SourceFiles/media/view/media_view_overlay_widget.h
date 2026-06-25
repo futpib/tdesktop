@@ -227,6 +227,8 @@ private:
 	bool handleDoubleClick(QPoint position, Qt::MouseButton button);
 	bool handleTouchEvent(not_null<QTouchEvent*> e);
 	void handleWheelEvent(not_null<QWheelEvent*> e);
+	bool handleNativeGesture(not_null<QNativeGestureEvent*> e);
+	void setupSwipeNavigation();
 	void handleKeyPress(not_null<QKeyEvent*> e);
 	void handleKeyRelease(not_null<QKeyEvent*> e);
 
@@ -838,6 +840,9 @@ private:
 	rpl::event_stream<bool> _touchbarFullscreenToggled;
 
 	int _verticalWheelDelta = 0;
+	float64 _pinchZoomAccumulated = 0.;
+	bool _zoomAtLimit = false;
+	bool _swipeNavigating = false;
 
 	Platform::TextRecognition::Result _recognitionResult;
 	uint64 _recognitionPendingSessionUniqueId = 0;

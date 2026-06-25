@@ -4601,6 +4601,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 "lng_stickers_create_new" = "Create a New Sticker";
 "lng_stickers_add_existing" = "Add an Existing Sticker";
+"lng_emoji_create_new" = "Create a New Emoji";
+"lng_emoji_add_existing" = "Add an Existing Emoji";
+"lng_emoji_adapt_sticker" = "Adapt from a Sticker";
+"lng_emoji_adapt_no_video" = "Video stickers are not supported yet.";
 "lng_stickers_add_to_set" = "Add to Sticker Set";
 "lng_stickers_already_in_set" = "This Sticker is already in the Set.";
 "lng_stickers_set_is_full" = "This Sticker Set is full.";
@@ -4608,6 +4612,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_emoji_already_in_set" = "This Emoji is already in the Set.";
 "lng_emoji_set_is_full" = "This Emoji Set is full.";
 "lng_emoji_added" = "Emoji added.";
+"lng_emoji_create_image_title" = "New Emoji";
+"lng_emoji_create_emoji_about" = "Choose emojis that match your emoji";
 "lng_stickers_pack_choose_emoji_title" = "Choose Emoji";
 "lng_stickers_pack_choose_emoji_about" = "Pick an emoji that corresponds to this sticker.";
 "lng_stickers_pick_existing_title" = "Choose Sticker";
@@ -5802,6 +5808,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_sr_message_gift_credits#other" = "Star gift, {count} stars";
 "lng_sr_message_invoice_paid" = "Paid";
 "lng_sr_message_invoice_unpaid" = "Unpaid";
+
+"lng_sr_folder_locked" = "{text}, Premium required";
+"lng_sr_folder_locked_about" = "Press to view subscription options.";
 
 "lng_media_save_progress" = "{ready} of {total} {mb}";
 "lng_mediaview_save_as" = "Save As...";
