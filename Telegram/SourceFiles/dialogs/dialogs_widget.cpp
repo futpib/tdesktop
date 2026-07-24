@@ -2121,10 +2121,18 @@ void Widget::updateSuggestions(anim::type animated) {
 		} else {
 			_suggestions = nullptr;
 			_hidingSuggestions.clear();
+			stopWidthAnimation();
 			storiesExplicitCollapse();
 			updateControlsVisibility();
 			_scroll->show();
 		}
+	} else if (!suggest
+		&& !_hidingSuggestions.empty()
+		&& (animated == anim::type::instant)) {
+		_hidingSuggestions.clear();
+		stopWidthAnimation();
+		updateControlsVisibility();
+		_scroll->show();
 	} else if (suggest && !_suggestions) {
 		_hidingSuggestions.clear();
 		if (animated == anim::type::normal) {
@@ -2242,6 +2250,7 @@ void Widget::changeOpenedSubsection(
 	destroyChildListCanvas();
 	change();
 	refreshTopBars();
+	updateSuggestions(anim::type::instant);
 	updateControlsVisibility(true);
 	_peerSearch.clear();
 	_api.request(base::take(_topicSearchRequest)).cancel();
