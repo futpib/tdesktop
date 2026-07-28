@@ -100,7 +100,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "config.h"
 #include "core/version.h"
 #include "core/cached_webview_availability.h"
-#include "styles/style_window.h"
+#include "test/test_agent.h"
 
 #include <td/telegram/td_json_client.h>
 
@@ -334,6 +334,8 @@ void Application::run() {
 	style::SetCustomFont(settings().customFontFamily());
 	style::internal::StartFonts();
 
+	Test::ApplyStartupOverrides();
+
 	ValidateScale();
 
 	refreshGlobalProxy(); // Depends on app settings being read.
@@ -542,6 +544,9 @@ void Application::run() {
 	}
 
 	processCreatedWindow(_lastActivePrimaryWindow);
+
+	Test::Fire(u"launch_finished"_q);
+	Test::Start();
 }
 
 void Application::autoRegisterUrlScheme() {
