@@ -5,6 +5,10 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: upstream-sync-dev
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -12,21 +16,70 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: tgymnich/fork-sync@e905b254d56ebb367514cd05fa96bf7516bd2a5a # v2.0.10
-        continue-on-error: true
-        with:
-          owner: telegramdesktop
-          base: dev
-          head: dev
-
-      - uses: actions/checkout@v4
+      - name: Checkout fork
+        uses: actions/checkout@v4
         with:
           ref: dev
+          fetch-depth: 0
+
+      - name: Merge upstream while preserving fork workflows
+        id: merge
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/telegramdesktop/tdesktop.git
+          git fetch --no-tags upstream dev
+
+          fork_head=$(git rev-parse HEAD)
+          if git merge-base --is-ancestor upstream/dev "$fork_head"; then
+            echo "result=noop" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git merge --no-commit --no-ff upstream/dev; then
+            if ! git rev-parse --quiet --verify MERGE_HEAD >/dev/null; then
+              exit 1
+            fi
+          fi
+
+          git rm -r -f --ignore-unmatch -- .github/workflows
+          git restore \
+            --source="$fork_head" \
+            --staged \
+            --worktree \
+            -- .github/workflows
+
+          conflicts=$(git diff --name-only --diff-filter=U)
+          if [ -n "$conflicts" ]; then
+            {
+              echo "### Upstream merge conflicts"
+              echo '```text'
+              echo "$conflicts"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git diff --quiet "$fork_head" -- .github/workflows; then
+            echo "Fork workflow preservation failed." >&2
+            git merge --abort
+            exit 1
+          fi
+
+          git commit --no-edit
+          echo "result=merged" >> "$GITHUB_OUTPUT"
 
       - name: Bump Telegram/ThirdParty/td to futpib/td:master
+        id: td
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           TD_SHA=$(gh api repos/futpib/td/branches/master --jq '.commit.sha')
           CURRENT=$(git ls-tree HEAD Telegram/ThirdParty/td | awk '{print $3}')
           if [ "$TD_SHA" != "$CURRENT" ]; then
@@ -34,5 +87,37 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git update-index --cacheinfo "160000,$TD_SHA,Telegram/ThirdParty/td"
             git commit -m "Bump Telegram/ThirdParty/td to $TD_SHA"
-            git push origin dev
+            echo "result=updated" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=noop" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Push updates
+        if: steps.merge.outputs.result == 'merged' || steps.td.outputs.result == 'updated'
+        run: git push origin HEAD:dev
+
+      - name: Close superseded upstream PRs
+        if: steps.merge.outputs.result == 'merged' || steps.merge.outputs.result == 'noop'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --base dev \
+            --head dev \
+            --json number,headRepositoryOwner,isCrossRepository \
+            --jq '.[] | select(.isCrossRepository and .headRepositoryOwner.login == "telegramdesktop") | .number' |
+          while read -r number; do
+            gh pr close "$number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --comment "Superseded by the local upstream sync; fork-owned workflow files were retained."
+          done
+
+      - name: Fail on unresolved upstream conflicts
+        if: steps.merge.outputs.result == 'conflict'
+        run: |
+          echo "::error::Upstream sync has conflicts outside .github/workflows."
+          exit 1
