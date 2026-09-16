@@ -49,8 +49,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 
+#include <array>
+
 namespace TdBridge {
 namespace {
+
+constexpr auto kTdLibZeroChannelId = qint64(-1000000000000LL);
+constexpr auto kTdLibZeroSecretChatId = qint64(-2000000000000LL);
 
 Export::Settings ParseExportSettings(const QJsonObject &settingsJson) {
 	auto result = Export::Settings();
@@ -255,16 +260,176 @@ QJsonObject ExportStateToJson(
 // supergroups are (ZERO_CHANNEL_ID - channel_id). Secret chats are not
 // supported. Returns PeerId(0) for an out-of-range (secret-chat) id.
 [[nodiscard]] PeerId PeerIdFromTdLibChatId(qint64 chatId) {
-	constexpr qint64 kZeroChannelId = -1000000000000LL;
-	constexpr qint64 kZeroSecretChatId = -2000000000000LL;
 	if (chatId > 0) {
 		return peerFromUser(UserId(chatId));
-	} else if (chatId > kZeroChannelId) {
+	} else if (chatId > kTdLibZeroChannelId) {
 		return peerFromChat(ChatId(-chatId));
-	} else if (chatId > kZeroSecretChatId) {
-		return peerFromChannel(ChannelId(kZeroChannelId - chatId));
+	} else if (chatId > kTdLibZeroSecretChatId) {
+		return peerFromChannel(ChannelId(kTdLibZeroChannelId - chatId));
 	}
 	return PeerId(0);
+}
+
+[[nodiscard]] qint64 TdLibChatIdFromPeerId(PeerId peerId) {
+	if (peerIsUser(peerId)) {
+		return qint64(peerToUser(peerId).bare);
+	} else if (peerIsChat(peerId)) {
+		return -qint64(peerToChat(peerId).bare);
+	} else if (peerIsChannel(peerId)) {
+		return kTdLibZeroChannelId - qint64(peerToChannel(peerId).bare);
+	}
+	return 0;
+}
+
+[[nodiscard]] bool ReadJsonInteger(
+		const QJsonValue &value,
+		qint64 &result) {
+	auto ok = false;
+	const auto parsed = value.toVariant().toLongLong(&ok);
+	if (!ok) {
+		return false;
+	}
+	result = parsed;
+	return true;
+}
+
+[[nodiscard]] bool IsChatIdField(const QString &key) {
+	return key != u"secret_chat_id"_q
+		&& (key == u"chat_id"_q || key.endsWith(u"_chat_id"_q));
+}
+
+[[nodiscard]] bool IsChatIdsField(const QString &key) {
+	return key != u"secret_chat_ids"_q
+		&& (key == u"chat_ids"_q || key.endsWith(u"_chat_ids"_q));
+}
+
+[[nodiscard]] bool IsChatScopedRequestType(const QString &type) {
+	static const auto types = QStringView(
+		u"addChatMember\naddChatMembers\n"
+		u"addChatToList\naddChatWelcomeMessage\naddChecklistTasks\n"
+		u"addFileToDownloads\naddLocalMessage\naddMessageReaction\naddOffer\n"
+		u"addPendingPaidMessageReaction\naddPollOption\naddRecentlyFoundChat\n"
+		u"addStoryAlbumStories\napproveSuggestedPost\nbanChatMember\n"
+		u"boostChat\ncanPostStory\ncheckChatUsername\n"
+		u"clickAnimatedEmojiMessage\nclickChatSponsoredMessage\ncloseChat\n"
+		u"closeStory\ncommitPendingPaidMessageReactions\n"
+		u"createChatInviteLink\n"
+		u"createChatSubscriptionInviteLink\ncreateCommunity\n"
+		u"createForumTopic\ncreateStoryAlbum\ncreateVideoChat\n"
+		u"declineGroupCallInvitation\ndeclineSuggestedPost\n"
+		u"deleteAllChatWelcomeMessages\n"
+		u"deleteAllRecentMessageReactionsFromSender\n"
+		u"deleteAllRevokedChatInviteLinks\ndeleteChat\ndeleteChatBackground\n"
+		u"deleteChatHistory\ndeleteChatMessagesByDate\n"
+		u"deleteChatMessagesBySender\ndeleteChatReplyMarkup\n"
+		u"deleteChatWelcomeMessage\ndeleteDirectMessagesChatTopicHistory\n"
+		u"deleteDirectMessagesChatTopicMessagesByDate\n"
+		u"deleteEphemeralMessage\ndeleteForumTopic\n"
+		u"deleteMessageEphemeralContent\ndeleteMessageReactionsFromSender\n"
+		u"deleteMessages\ndeletePollOption\ndeleteRevokedChatInviteLink\n"
+		u"deleteStory\ndeleteStoryAlbum\neditBusinessMessageCaption\n"
+		u"editBusinessMessageChecklist\neditBusinessMessageLiveLocation\n"
+		u"editBusinessMessageMedia\neditBusinessMessageReplyMarkup\n"
+		u"editBusinessMessageText\neditBusinessStory\n"
+		u"editChatInviteLink\n"
+		u"editChatSubscriptionInviteLink\neditChatWelcomeMessage\n"
+		u"editEphemeralMessage\neditEphemeralMessageCaption\neditForumTopic\n"
+		u"editMessageCaption\neditMessageChecklist\neditMessageLiveLocation\n"
+		u"editMessageMedia\neditMessageReplyMarkup\n"
+		u"editMessageSchedulingState\neditMessageText\neditStory\n"
+		u"editStoryCover\nforwardMessages\ngetAllStickerEmojis\n"
+		u"getCallbackQueryAnswer\ngetCallbackQueryMessage\ngetChat\n"
+		u"getChatActiveStories\ngetChatAdministrators\n"
+		u"getChatArchivedStories\ngetChatAvailableMessageSenders\n"
+		u"getChatAvailablePaidMessageReactionSenders\ngetChatBoostLink\n"
+		u"getChatBoostStatus\ngetChatBoosts\ngetChatEventLog\ngetChatHistory\n"
+		u"getChatInviteLink\ngetChatInviteLinkCounts\n"
+		u"getChatInviteLinkMembers\ngetChatInviteLinks\ngetChatJoinRequests\n"
+		u"getChatListsToAddChat\ngetChatMember\ngetChatMessageByDate\n"
+		u"getChatMessageCalendar\ngetChatMessageCount\n"
+		u"getChatMessagePosition\ngetChatOwnerAfterLeaving\n"
+		u"getChatPinnedMessage\ngetChatPostedToChatPageStories\n"
+		u"getChatRevenueStatistics\ngetChatRevenueTransactions\n"
+		u"getChatRevenueWithdrawalUrl\ngetChatScheduledMessages\n"
+		u"getChatSimilarChatCount\ngetChatSimilarChats\n"
+		u"getChatSparseMessagePositions\ngetChatSponsoredMessages\n"
+		u"getChatStatistics\ngetChatStoryAlbums\ngetChatStoryInteractions\n"
+		u"getDirectMessagesChatTopic\ngetDirectMessagesChatTopicHistory\n"
+		u"getDirectMessagesChatTopicMessageByDate\n"
+		u"getDirectMessagesChatTopicRevenue\ngetForumTopic\n"
+		u"getForumTopicHistory\ngetForumTopicLink\ngetForumTopics\n"
+		u"getFullRichMessage\ngetGameHighScores\ngetGiveawayInfo\n"
+		u"getInlineQueryResults\ngetLiveStoryRtmpUrl\n"
+		u"getLoginUrl\ngetLoginUrlInfo\ngetMainWebApp\ngetMapThumbnailFile\n"
+		u"getMessage\ngetMessageAddedReactions\ngetMessageAuthor\n"
+		u"getMessageAvailableReactions\ngetMessageEmbeddingCode\n"
+		u"getMessageImportConfirmationText\ngetMessageLink\n"
+		u"getMessageLocally\ngetMessageProperties\ngetMessagePublicForwards\n"
+		u"getMessageReadDate\ngetMessageStatistics\ngetMessageThread\n"
+		u"getMessageThreadHistory\ngetMessageViewers\ngetMessages\n"
+		u"getPaymentReceipt\ngetPollOptionProperties\ngetPollVoteStatistics\n"
+		u"getPollVoters\ngetPremiumGiveawayPaymentOptions\ngetRepliedMessage\n"
+		u"getStatisticalGraph\ngetStickers\ngetStory\ngetStoryAlbumStories\n"
+		u"getStoryPublicForwards\ngetStoryStatistics\ngetUserChatBoosts\n"
+		u"getVideoChatAvailableParticipants\ngetVideoChatRtmpUrl\n"
+		u"getVideoMessageAdvertisements\ngetWebAppLinkUrl\nimportMessages\n"
+		u"joinChat\nleaveChat\nloadChatWelcomeMessages\n"
+		u"loadDirectMessagesChatTopics\nmarkChecklistTasksAsDone\nopenChat\n"
+		u"openChatSimilarChat\nopenMessageContent\nopenStory\nopenWebApp\n"
+		u"pinChatMessage\npostStory\n"
+		u"processChatHasProtectedContentDisableRequest\n"
+		u"processChatJoinRequest\nprocessChatJoinRequests\n"
+		u"rateSpeechRecognition\nreadAllChatMentions\nreadAllChatPollVotes\n"
+		u"readAllChatReactions\nreadAllDirectMessagesChatTopicReactions\n"
+		u"readAllForumTopicMentions\nreadAllForumTopicPollVotes\n"
+		u"readAllForumTopicReactions\nreadBusinessMessage\nrecognizeSpeech\n"
+		u"removeBusinessConnectedBotFromChat\nremoveChatActionBar\n"
+		u"removeMessageReaction\nremovePendingPaidMessageReactions\n"
+		u"removeRecentlyFoundChat\nremoveStoryAlbumStories\nremoveTopChat\n"
+		u"reorderStoryAlbumStories\nreorderStoryAlbums\n"
+		u"replaceLiveStoryRtmpUrl\nreplacePrimaryChatInviteLink\n"
+		u"replaceVideoChatRtmpUrl\nreportChat\nreportChatPhoto\n"
+		u"reportChatSponsoredMessage\nreportMessageReactions\nreportStory\n"
+		u"resendMessages\nrevokeChatInviteLink\nsaveApplicationLogEvent\n"
+		u"searchChatMembers\nsearchChatMessages\n"
+		u"searchChatRecentLocationMessages\nsearchPublicStoriesByTag\n"
+		u"searchSecretMessages\nsendBotStartMessage\nsendBusinessMessage\n"
+		u"sendBusinessMessageAlbum\nsendChatAction\nsendEphemeralMessage\n"
+		u"sendInlineQueryResultMessage\nsendMessage\nsendMessageAlbum\n"
+		u"sendMessageViewMetrics\nsendQuickReplyShortcutMessages\n"
+		u"sendRichMessageDraft\nsendTextMessageDraft\n"
+		u"setBusinessMessageIsPinned\nsetChatAccentColor\n"
+		u"setChatActiveStoriesList\nsetChatAffiliateProgram\n"
+		u"setChatAvailableReactions\nsetChatBackground\nsetChatClientData\n"
+		u"setChatDescription\nsetChatDirectMessagesGroup\n"
+		u"setChatDiscussionGroup\nsetChatDraftMessage\nsetChatEmojiStatus\n"
+		u"setChatLocation\nsetChatMemberStatus\nsetChatMemberTag\n"
+		u"setChatMessageAutoDeleteTime\nsetChatMessageSender\n"
+		u"setChatNotificationSettings\nsetChatPaidMessageStarCount\n"
+		u"setChatPermissions\nsetChatPhoto\nsetChatPinnedStories\n"
+		u"setChatProfileAccentColor\nsetChatSlowModeDelay\nsetChatTheme\n"
+		u"setChatTitle\nsetDirectMessagesChatTopicIsMarkedAsUnread\n"
+		u"setForumTopicNotificationSettings\nsetGameScore\n"
+		u"setMessageFactCheck\nsetMessageReactions\n"
+		u"setPaidMessageReactionType\nsetPersonalChat\n"
+		u"setPinnedForumTopics\nsetPollAnswer\nsetStoryAlbumName\n"
+		u"setStoryReaction\nsetVideoChatDefaultParticipant\nshareChatWithBot\n"
+		u"startLiveStory\nstopBusinessPoll\nstopPendingMessage\nstopPoll\n"
+		u"summarizeMessage\ntoggleBusinessConnectedBotChatIsPaused\n"
+		u"toggleChatDefaultDisableNotification\ntoggleChatGiftNotifications\n"
+		u"toggleChatHasProtectedContent\ntoggleChatIsMarkedAsUnread\n"
+		u"toggleChatIsPinned\ntoggleChatIsTranslatable\n"
+		u"toggleChatViewAsTopics\n"
+		u"toggleDirectMessagesChatTopicCanSendUnpaidMessages\n"
+		u"toggleForumTopicIsClosed\ntoggleForumTopicIsPinned\n"
+		u"toggleGeneralForumTopicIsHidden\ntoggleStoryIsPostedToChatPage\n"
+		u"transferChatOwnership\ntranslateMessageRichMessage\n"
+		u"translateMessageText\nunpinAllChatMessages\n"
+		u"unpinAllDirectMessagesChatTopicMessages\n"
+		u"unpinAllForumTopicMessages\nunpinChatMessage\n"
+		u"upgradeBasicGroupChatToSupergroupChat\nviewMessages\n"
+	).split(u'\n', Qt::SkipEmptyParts);
+	return ranges::contains(types, type);
 }
 
 } // namespace
@@ -275,7 +440,38 @@ ControlServer::ControlServer(
 		QObject *parent)
 : QObject(parent)
 , _socketPath(socketPath)
-, _allowedAccountSpecs(allowedAccountSpecs) {
+, _allowedAccountSpecs(allowedAccountSpecs)
+, _chatFilteringEnabled(qEnvironmentVariableIsSet(
+	"TDESKTOP_SOCKET_CHATS")) {
+	if (_chatFilteringEnabled) {
+		const auto allowedChatSpecs = qEnvironmentVariable(
+			"TDESKTOP_SOCKET_CHATS").split(',', Qt::SkipEmptyParts);
+		for (const auto &rawSpec : allowedChatSpecs) {
+			const auto separator = rawSpec.indexOf(':');
+			const auto accountSpec = rawSpec.left(separator).trimmed();
+			const auto chatSpec = rawSpec.mid(separator + 1).trimmed();
+			if (separator <= 0 || accountSpec.isEmpty() || chatSpec.isEmpty()) {
+				base::LogWriteMain(
+					u"Control Server: Ignoring invalid chat access spec '%1'"_q
+						.arg(rawSpec));
+				continue;
+			}
+			if (chatSpec == u"*"_q) {
+				_allowedChatSpecs.push_back({ accountSpec, 0 });
+				continue;
+			}
+			auto ok = false;
+			const auto chatId = chatSpec.toLongLong(&ok);
+			if (!ok || !chatId) {
+				base::LogWriteMain(
+					u"Control Server: Ignoring invalid chat access spec '%1'"_q
+						.arg(rawSpec));
+				continue;
+			}
+			_allowedChatSpecs.push_back({ accountSpec, chatId });
+		}
+	}
+
 	connect(&_server, &QLocalServer::newConnection,
 		this, &ControlServer::onNewConnection);
 
@@ -310,6 +506,8 @@ void ControlServer::stop() {
 	_clients.clear();
 	_accounts.clear();
 	_clientIdToAccount.clear();
+	_allowedFileIds.clear();
+	_allowedUserIds.clear();
 	_server.close();
 
 	QFile::remove(_socketPath);
@@ -319,24 +517,411 @@ void ControlServer::setDomain(not_null<Main::Domain*> domain) {
 	_domain = domain;
 }
 
+bool ControlServer::accountSpecMatches(
+		int accountIndex,
+		const QString &spec) const {
+	const auto trimmed = spec.trimmed();
+	if (trimmed == u"*"_q) {
+		return true;
+	}
+	auto ok = false;
+	const auto index = trimmed.toInt(&ok);
+	if (ok && index == accountIndex) {
+		return true;
+	}
+	const auto it = _accounts.find(accountIndex);
+	return it != _accounts.end()
+		&& !it->second.info.username.isEmpty()
+		&& it->second.info.username.compare(
+			trimmed,
+			Qt::CaseInsensitive) == 0;
+}
+
 bool ControlServer::isAccountAllowed(int accountIndex) const {
 	for (const auto &spec : _allowedAccountSpecs) {
-		if (spec == u"*"_q) {
-			return true;
-		}
-		bool ok = false;
-		if (spec.toInt(&ok) == accountIndex && ok) {
-			return true;
-		}
-		auto it = _accounts.find(accountIndex);
-		if (it != _accounts.end()
-			&& !it->second.info.username.isEmpty()
-			&& it->second.info.username.compare(
-				spec, Qt::CaseInsensitive) == 0) {
+		if (accountSpecMatches(accountIndex, spec)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+bool ControlServer::isChatRestricted(int accountIndex) const {
+	if (!_chatFilteringEnabled) {
+		return false;
+	}
+	for (const auto &spec : _allowedChatSpecs) {
+		if (!spec.chatId
+			&& accountSpecMatches(accountIndex, spec.accountSpec)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ControlServer::isChatAllowed(
+		int accountIndex,
+		qint64 chatId) const {
+	if (!isChatRestricted(accountIndex)) {
+		return true;
+	}
+	for (const auto &spec : _allowedChatSpecs) {
+		if (spec.chatId == chatId
+			&& accountSpecMatches(accountIndex, spec.accountSpec)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+ControlServer::ChatAccess ControlServer::chatAccessForJson(
+		int accountIndex,
+		const QJsonValue &value) const {
+	if (value.isArray()) {
+		auto result = ChatAccess::None;
+		for (const auto &entry : value.toArray()) {
+			const auto nested = chatAccessForJson(accountIndex, entry);
+			if (nested == ChatAccess::Denied) {
+				return nested;
+			} else if (nested == ChatAccess::Allowed) {
+				result = nested;
+			}
+		}
+		return result;
+	} else if (!value.isObject()) {
+		return ChatAccess::None;
+	}
+
+	const auto object = value.toObject();
+	auto result = ChatAccess::None;
+	const auto checkChatId = [&](const QJsonValue &candidate) {
+		auto chatId = qint64();
+		if (!ReadJsonInteger(candidate, chatId) || !chatId) {
+			return ChatAccess::None;
+		}
+		return isChatAllowed(accountIndex, chatId)
+			? ChatAccess::Allowed
+			: ChatAccess::Denied;
+	};
+	const auto merge = [&](ChatAccess nested) {
+		if (nested == ChatAccess::Denied) {
+			return false;
+		} else if (nested == ChatAccess::Allowed) {
+			result = nested;
+		}
+		return true;
+	};
+
+	const auto type = object.value("@type").toString();
+	if (type == u"chat"_q
+		&& !merge(checkChatId(object.value("id")))) {
+		return ChatAccess::Denied;
+	}
+	if (type == u"basicGroup"_q || type == u"supergroup"_q) {
+		auto groupId = qint64();
+		if (ReadJsonInteger(object.value("id"), groupId) && groupId > 0) {
+			const auto chatId = (type == u"basicGroup"_q)
+				? -groupId
+				: (kTdLibZeroChannelId - groupId);
+			if (!merge(isChatAllowed(accountIndex, chatId)
+					? ChatAccess::Allowed
+					: ChatAccess::Denied)) {
+				return ChatAccess::Denied;
+			}
+		}
+	}
+	const auto idIsChat = ranges::contains(std::array{
+		u"basicGroup"_q,
+		u"chat"_q,
+		u"supergroup"_q,
+	}, type);
+	for (auto i = object.begin(), end = object.end(); i != end; ++i) {
+		if (i.key() == u"@extra"_q) {
+			continue;
+		}
+		if (IsChatIdField(i.key())) {
+			if (!merge(checkChatId(i.value()))) {
+				return ChatAccess::Denied;
+			}
+			continue;
+		} else if (IsChatIdsField(i.key())) {
+			for (const auto &chatId : i.value().toArray()) {
+				if (!merge(checkChatId(chatId))) {
+					return ChatAccess::Denied;
+				}
+			}
+			continue;
+		} else if (i.key() == u"id"_q && idIsChat) {
+			continue;
+		}
+		if (!merge(chatAccessForJson(accountIndex, i.value()))) {
+			return ChatAccess::Denied;
+		}
+	}
+	return result;
+}
+
+bool ControlServer::isFileAllowed(int accountIndex, int fileId) const {
+	const auto it = _allowedFileIds.find(accountIndex);
+	return it != _allowedFileIds.end() && it->second.contains(fileId);
+}
+
+bool ControlServer::isUserAllowed(
+		int accountIndex,
+		qint64 userId) const {
+	if (isChatAllowed(accountIndex, userId)) {
+		return true;
+	}
+	const auto it = _allowedUserIds.find(accountIndex);
+	return it != _allowedUserIds.end() && it->second.contains(userId);
+}
+
+bool ControlServer::isTdLibRequestAllowed(
+		int accountIndex,
+		const QJsonObject &payload) const {
+	if (!isChatRestricted(accountIndex)) {
+		return true;
+	}
+	const auto type = payload.value("@type").toString();
+	if (chatAccessForJson(accountIndex, payload) == ChatAccess::Denied) {
+		return false;
+	}
+	static const auto untargetedTypes = std::array{
+		u"getAuthorizationState"_q,
+		u"getChats"_q,
+		u"loadChats"_q,
+		u"searchChats"_q,
+		u"searchChatsOnServer"_q,
+		u"searchPublicChat"_q,
+		u"searchPublicChats"_q,
+	};
+	if (ranges::contains(untargetedTypes, type)) {
+		return true;
+	}
+
+	static const auto fileTypes = std::array{
+		u"addFileToDownloads"_q,
+		u"cancelDownloadFile"_q,
+		u"deleteFile"_q,
+		u"downloadFile"_q,
+		u"getFile"_q,
+		u"removeFileFromDownloads"_q,
+	};
+	for (const auto &allowed : fileTypes) {
+		if (type == allowed) {
+			return isFileAllowed(
+				accountIndex,
+				payload.value("file_id").toInt());
+		}
+	}
+
+	static const auto userTypes = std::array{
+		u"getUser"_q,
+		u"getUserFullInfo"_q,
+	};
+	for (const auto &allowed : userTypes) {
+		if (type == allowed) {
+			auto userId = qint64();
+			return ReadJsonInteger(payload.value("user_id"), userId)
+				&& isUserAllowed(accountIndex, userId);
+		}
+	}
+
+	static const auto basicGroupTypes = std::array{
+		u"getBasicGroup"_q,
+		u"getBasicGroupFullInfo"_q,
+	};
+	if (ranges::contains(basicGroupTypes, type)) {
+		auto groupId = qint64();
+		return ReadJsonInteger(payload.value("basic_group_id"), groupId)
+			&& isChatAllowed(accountIndex, -groupId);
+	}
+	static const auto supergroupTypes = std::array{
+		u"getSupergroup"_q,
+		u"getSupergroupFullInfo"_q,
+	};
+	if (ranges::contains(supergroupTypes, type)) {
+		auto groupId = qint64();
+		return ReadJsonInteger(payload.value("supergroup_id"), groupId)
+			&& isChatAllowed(
+				accountIndex,
+				kTdLibZeroChannelId - groupId);
+	}
+	if (!IsChatScopedRequestType(type)) {
+		return false;
+	}
+	static const auto storyTypes = std::array{
+		u"closeStory"_q,
+		u"createStoryAlbum"_q,
+		u"deleteStory"_q,
+		u"editBusinessStory"_q,
+		u"editStory"_q,
+		u"editStoryCover"_q,
+		u"getChatStoryInteractions"_q,
+		u"getStory"_q,
+		u"getStoryPublicForwards"_q,
+		u"openStory"_q,
+		u"reportStory"_q,
+		u"searchPublicStoriesByTag"_q,
+		u"setStoryReaction"_q,
+		u"toggleStoryIsPostedToChatPage"_q,
+	};
+	const auto chatIdField = ranges::contains(storyTypes, type)
+		? u"story_poster_chat_id"_q
+		: (type == u"getPremiumGiveawayPaymentOptions"_q)
+		? u"boosted_chat_id"_q
+		: (type == u"shareChatWithBot"_q)
+		? u"shared_chat_id"_q
+		: u"chat_id"_q;
+	auto chatId = qint64();
+	return ReadJsonInteger(payload.value(chatIdField), chatId)
+		&& chatId
+		&& isChatAllowed(accountIndex, chatId);
+}
+
+void ControlServer::rememberAllowedFiles(
+		int accountIndex,
+		const QJsonValue &value) {
+	if (value.isArray()) {
+		for (const auto &entry : value.toArray()) {
+			rememberAllowedFiles(accountIndex, entry);
+		}
+		return;
+	} else if (!value.isObject()) {
+		return;
+	}
+
+	const auto object = value.toObject();
+	if (object.value("@type").toString() == u"file"_q) {
+		const auto fileId = object.value("id").toInt();
+		if (fileId > 0) {
+			_allowedFileIds[accountIndex].emplace(fileId);
+		}
+	}
+	for (auto i = object.begin(), end = object.end(); i != end; ++i) {
+		if (i.key() == u"@extra"_q) {
+			continue;
+		}
+		rememberAllowedFiles(accountIndex, i.value());
+	}
+}
+
+void ControlServer::rememberAllowedUsers(
+		int accountIndex,
+		const QJsonValue &value) {
+	if (value.isArray()) {
+		for (const auto &entry : value.toArray()) {
+			rememberAllowedUsers(accountIndex, entry);
+		}
+		return;
+	} else if (!value.isObject()) {
+		return;
+	}
+
+	const auto object = value.toObject();
+	for (auto i = object.begin(), end = object.end(); i != end; ++i) {
+		if (i.key() == u"@extra"_q) {
+			continue;
+		}
+		if (i.key() == u"user_id"_q || i.key().endsWith(u"_user_id"_q)) {
+			auto userId = qint64();
+			if (ReadJsonInteger(i.value(), userId) && userId > 0) {
+				_allowedUserIds[accountIndex].emplace(userId);
+			}
+		} else if (i.key() == u"user_ids"_q
+			|| i.key().endsWith(u"_user_ids"_q)) {
+			for (const auto &entry : i.value().toArray()) {
+				auto userId = qint64();
+				if (ReadJsonInteger(entry, userId) && userId > 0) {
+					_allowedUserIds[accountIndex].emplace(userId);
+				}
+			}
+		}
+		rememberAllowedUsers(accountIndex, i.value());
+	}
+}
+
+bool ControlServer::filterTdLibPayload(
+		int accountIndex,
+		QJsonObject &payload) {
+	if (!isChatRestricted(accountIndex)) {
+		return true;
+	}
+
+	const auto type = payload.value("@type").toString();
+	if (type == u"chats"_q) {
+		auto filtered = QJsonArray();
+		for (const auto &value : payload.value("chat_ids").toArray()) {
+			auto chatId = qint64();
+			if (ReadJsonInteger(value, chatId)
+				&& isChatAllowed(accountIndex, chatId)) {
+				filtered.append(value);
+			}
+		}
+		payload["chat_ids"] = filtered;
+		payload["total_count"] = filtered.size();
+	}
+
+	const auto access = chatAccessForJson(accountIndex, payload);
+	if (access == ChatAccess::Denied) {
+		const auto extra = payload.value("@extra");
+		if (extra.isUndefined()) {
+			return false;
+		}
+		payload = QJsonObject{
+			{ "@type", "error" },
+			{ "code", 403 },
+			{ "message", "Chat not allowed" },
+			{ "@extra", extra },
+		};
+		return true;
+	}
+
+	if (type == u"file"_q) {
+		if (!isFileAllowed(accountIndex, payload.value("id").toInt())) {
+			return false;
+		}
+	} else if (type == u"updateFile"_q) {
+		const auto fileId = payload.value("file").toObject().value("id").toInt();
+		if (!isFileAllowed(accountIndex, fileId)) {
+			return false;
+		}
+	} else if (type == u"updateUser"_q) {
+		auto userId = qint64();
+		if (!ReadJsonInteger(
+				payload.value("user").toObject().value("id"),
+				userId)
+			|| !isUserAllowed(accountIndex, userId)) {
+			return false;
+		}
+	} else if (type == u"updateUserFullInfo"_q) {
+		auto userId = qint64();
+		if (!ReadJsonInteger(payload.value("user_id"), userId)
+			|| !isUserAllowed(accountIndex, userId)) {
+			return false;
+		}
+	} else if (type.startsWith(u"update"_q)
+		&& access == ChatAccess::None) {
+		return false;
+	}
+
+	const auto allowedUnscopedUpdate = ranges::contains(std::array{
+		u"updateFile"_q,
+		u"updateUser"_q,
+		u"updateUserFullInfo"_q,
+	}, type);
+	if (access == ChatAccess::None
+		&& !payload.contains("@extra")
+		&& !allowedUnscopedUpdate
+		&& type != u"ok"_q
+		&& type != u"error"_q
+		&& type != u"chats"_q) {
+		return false;
+	}
+
+	rememberAllowedFiles(accountIndex, payload);
+	rememberAllowedUsers(accountIndex, payload);
+	return true;
 }
 
 void ControlServer::recomputeDefaultAccount() {
@@ -381,6 +966,8 @@ void ControlServer::removeAccountClient(int accountIndex) {
 		_accounts.erase(it);
 	}
 	_activeExports.erase(accountIndex);
+	_allowedFileIds.erase(accountIndex);
+	_allowedUserIds.erase(accountIndex);
 	recomputeDefaultAccount();
 }
 
@@ -459,26 +1046,66 @@ void ControlServer::processLine(
 		}
 	}
 
-	if (needsAccountCheck && !isAccountAllowed(accountIndex)) {
-		const auto errorPayload = QJsonObject{
+	const auto sendForbidden = [&](const QString &message) {
+		auto errorPayload = QJsonObject{
 			{ "@type", "error" },
 			{ "code", 403 },
-			{ "message",
-				u"Account %1 not allowed"_q.arg(accountIndex) },
+			{ "message", message },
 		};
+		const auto requestPayload = obj.value("payload").toObject();
 		if (type == u"tdesktop"_q) {
+			const auto extra = requestPayload.value("@extra");
+			if (!extra.isUndefined()) {
+				errorPayload["@extra"] = extra;
+			}
 			sendJson(socket, QJsonObject{
 				{ "type", "tdesktop" },
 				{ "payload", errorPayload },
 			});
 		} else {
-			sendJson(socket, QJsonObject{
+			if (type == u"tdlib"_q) {
+				const auto extra = requestPayload.value("@extra");
+				if (!extra.isUndefined()) {
+					errorPayload["@extra"] = extra;
+				}
+			}
+			auto response = QJsonObject{
 				{ "type", type },
 				{ "account", accountIndex },
 				{ "payload", errorPayload },
-			});
+			};
+			if (type == u"mtp"_q && obj.contains("@extra")) {
+				response["@extra"] = obj.value("@extra");
+			}
+			sendJson(socket, response);
 		}
+	};
+
+	if (needsAccountCheck && !isAccountAllowed(accountIndex)) {
+		sendForbidden(u"Account %1 not allowed"_q.arg(accountIndex));
 		return;
+	}
+	if (type == u"tdlib"_q
+		&& !isTdLibRequestAllowed(
+			accountIndex,
+			obj.value("payload").toObject())) {
+		sendForbidden(u"Chat access denied for account %1"_q.arg(
+			accountIndex));
+		return;
+	}
+	if (type == u"mtp"_q && isChatRestricted(accountIndex)) {
+		sendForbidden(u"Raw MTP is disabled for chat-restricted account %1"_q
+			.arg(accountIndex));
+		return;
+	}
+	if (type == u"tdesktop"_q && isChatRestricted(accountIndex)) {
+		const auto command = obj.value(
+			"payload").toObject().value("command").toString();
+		if (command == u"export"_q || command == u"cancelExport"_q) {
+			sendForbidden(u"Export is disabled for chat-restricted account %1"_q
+				.arg(accountIndex));
+			return;
+		}
 	}
 
 	if (type == u"tdlib"_q) {
@@ -1109,16 +1736,22 @@ void ControlServer::handleSendFileCommand(
 
 	// Resolve the target peer: explicit tdesktop peer_id, or a TDLib chat_id.
 	auto peerId = PeerId(0);
+	auto chatId = qint64();
 	if (payload.contains("peer_id")) {
 		peerId = PeerId(uint64(
 			payload.value("peer_id").toVariant().toLongLong()));
+		chatId = TdLibChatIdFromPeerId(peerId);
 	} else if (payload.contains("chat_id")) {
-		peerId = PeerIdFromTdLibChatId(
-			qint64(payload.value("chat_id").toVariant().toLongLong()));
+		chatId = qint64(payload.value(
+			"chat_id").toVariant().toLongLong());
+		peerId = PeerIdFromTdLibChatId(chatId);
 	}
 	if (!peerId.value) {
 		return fail(400,
 			u"Missing or unsupported target (chat_id or peer_id)"_q);
+	}
+	if (!isChatAllowed(accountIndex, chatId)) {
+		return fail(403, u"Chat %1 not allowed"_q.arg(chatId));
 	}
 
 	const auto peer = session->data().peerLoaded(peerId);
@@ -1229,6 +1862,9 @@ void ControlServer::pollTdLib() {
 
 		// Remove @client_id, wrap in envelope with "type":"tdlib".
 		obj.remove("@client_id");
+		if (!filterTdLibPayload(accountIndex, obj)) {
+			continue;
+		}
 
 		auto envelope = QJsonObject{
 			{ "type", "tdlib" },

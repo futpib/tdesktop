@@ -7,13 +7,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include <QtCore/QJsonObject>
+#include <QtCore/QTimer>
 #include <QtNetwork/QLocalServer>
 #include <QtNetwork/QLocalSocket>
-#include <QtCore/QTimer>
 
 #include "base/flat_map.h"
+#include "base/flat_set.h"
 
 #include <rpl/lifetime.h>
+
+#include <vector>
 
 namespace Main {
 class Domain;
@@ -90,11 +94,37 @@ private:
 	void sendJson(QLocalSocket *socket, const QJsonObject &obj);
 	void broadcastJson(const QJsonObject &obj);
 
+	enum class ChatAccess {
+		None,
+		Allowed,
+		Denied,
+	};
+	struct ChatAccessSpec {
+		QString accountSpec;
+		qint64 chatId = 0;
+	};
+
+	bool accountSpecMatches(int accountIndex, const QString &spec) const;
 	bool isAccountAllowed(int accountIndex) const;
+	bool isChatRestricted(int accountIndex) const;
+	bool isChatAllowed(int accountIndex, qint64 chatId) const;
+	bool isTdLibRequestAllowed(
+		int accountIndex,
+		const QJsonObject &payload) const;
+	ChatAccess chatAccessForJson(
+		int accountIndex,
+		const QJsonValue &value) const;
+	bool filterTdLibPayload(int accountIndex, QJsonObject &payload);
+	void rememberAllowedFiles(int accountIndex, const QJsonValue &value);
+	void rememberAllowedUsers(int accountIndex, const QJsonValue &value);
+	bool isFileAllowed(int accountIndex, int fileId) const;
+	bool isUserAllowed(int accountIndex, qint64 userId) const;
 	void recomputeDefaultAccount();
 
 	QString _socketPath;
 	QStringList _allowedAccountSpecs;
+	std::vector<ChatAccessSpec> _allowedChatSpecs;
+	bool _chatFilteringEnabled = false;
 	int _defaultAccount = 0;
 	QLocalServer _server;
 	QTimer _pollTimer;
@@ -117,6 +147,8 @@ private:
 	};
 	base::flat_map<int, AccountEntry> _accounts;
 	base::flat_map<int, int> _clientIdToAccount;
+	base::flat_map<int, base::flat_set<int>> _allowedFileIds;
+	base::flat_map<int, base::flat_set<qint64>> _allowedUserIds;
 
 	struct ActiveExport {
 		std::unique_ptr<Export::Controller> controller;
