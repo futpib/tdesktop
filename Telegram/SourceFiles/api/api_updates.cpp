@@ -1007,7 +1007,9 @@ void Updates::updateOnline(crl::time lastNonIdleTime, bool gotOtherOffline) {
 				_idleFinishTimer.callOnce(900);
 			}
 		} else {
-			updateIn = qMin(updateIn, int(config.offlineIdleTimeout - idle));
+			updateIn = std::min(
+				updateIn,
+				int(config.offlineIdleTimeout - idle));
 			Assert(updateIn >= 0);
 		}
 	}
@@ -1047,7 +1049,9 @@ void Updates::updateOnline(crl::time lastNonIdleTime, bool gotOtherOffline) {
 
 		_lastSetOnline = ms;
 	} else if (isOnline) {
-		updateIn = qMin(updateIn, int(_lastSetOnline + config.onlineUpdatePeriod - ms));
+		updateIn = std::min(
+			updateIn,
+			int(_lastSetOnline + config.onlineUpdatePeriod - ms));
 		Assert(updateIn >= 0);
 	}
 	_onlineTimer.callOnce(updateIn);
@@ -1438,6 +1442,15 @@ void Updates::applyUpdateNoPtsCheck(const MTPUpdate &update) {
 			const auto item = session().data().message(peerId, msgId.v);
 			if (item) {
 				item->setIsPinned(d.is_pinned());
+			} else if (d.is_pinned()) {
+				if (const auto peer = session().data().channelLoaded(
+						d.vchannel_id())) {
+					session().api().requestPinnedMessagesIfNeeded(
+						peer,
+						msgId.v,
+						MsgId(0), // topicRootId
+						PeerId(0)); // monoforumPeerId
+				}
 			}
 		}
 	} break;
@@ -1466,6 +1479,14 @@ void Updates::applyUpdateNoPtsCheck(const MTPUpdate &update) {
 			const auto item = session().data().message(peerId, msgId.v);
 			if (item) {
 				item->setIsPinned(d.is_pinned());
+			} else if (d.is_pinned()) {
+				if (const auto peer = session().data().peerLoaded(peerId)) {
+					session().api().requestPinnedMessagesIfNeeded(
+						peer,
+						msgId.v,
+						MsgId(0), // topicRootId
+						PeerId(0)); // monoforumPeerId
+				}
 			}
 		}
 	} break;

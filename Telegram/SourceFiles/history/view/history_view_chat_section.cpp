@@ -576,7 +576,6 @@ ChatWidget::ChatWidget(
 			.repliesRootId = _repliesRootId,
 			.topic = _topic,
 			.sublist = _sublist,
-			.monoforumPeerId = _monoforumPeerId,
 			.scroll = _scroll.get(),
 			.list = _inner.data(),
 			.keyboardReservedHeight = [=] {
@@ -1312,7 +1311,7 @@ void ChatWidget::subscribeToTopic() {
 void ChatWidget::closeCurrent() {
 	const auto thread = controller()->windowId().chat();
 	if ((_sublist && thread == _sublist) || (_topic && thread == _topic)) {
-		controller()->window().close();
+		Core::App().closeWindow(&controller()->window());
 	} else {
 		controller()->showBackFromStack(Window::SectionShow(
 			anim::type::normal,
@@ -5782,7 +5781,7 @@ void ChatWidget::listOpenPhoto(
 		photo,
 		{
 			context,
-			(item && !_monoforumPeerId)
+			(item && _peer->isForum())
 				? item->topicRootId()
 				: _repliesRootId,
 			_monoforumPeerId,
@@ -5804,7 +5803,7 @@ void ChatWidget::listOpenDocument(
 		showInMediaView,
 		{
 			context,
-			(item && !_monoforumPeerId)
+			(item && _peer->isForum())
 				? item->topicRootId()
 				: _repliesRootId,
 			_monoforumPeerId,
@@ -6074,17 +6073,15 @@ void ChatWidget::setupShortcuts() {
 						_history));
 				return true;
 			});
-		if (mode() == Mode::History) {
-			const auto channel = _peer->asChannel();
-			const auto hasRecentActions = channel
-				&& (channel->hasAdminRights() || channel->amCreator());
-			if (hasRecentActions) {
-				request->check(Command::ShowAdminLog, 1) && request->handle([=] {
-					controller()->showSection(
-						std::make_shared<AdminLog::SectionMemento>(channel));
-					return true;
-				});
-			}
+		const auto channel = _sublist ? nullptr : _peer->asChannel();
+		const auto hasRecentActions = channel
+			&& (channel->hasAdminRights() || channel->amCreator());
+		if (hasRecentActions) {
+			request->check(Command::ShowAdminLog, 1) && request->handle([=] {
+				controller()->showSection(
+					std::make_shared<AdminLog::SectionMemento>(channel));
+				return true;
+			});
 		}
 		if ((mode() == Mode::History) && session().supportMode()) {
 			request->check(Command::SupportToggleMuted)

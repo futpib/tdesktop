@@ -273,7 +273,7 @@ object_ptr<Ui::RpWidget> InnerWidget::setupContent(
 		auto tabs = std::vector<MediaTabDescriptor>();
 		const auto countValue = [&](Storage::SharedMediaType type) {
 			return SharedMediaCountValue(
-				tabsPeer,
+				_peer,
 				topicRootId,
 				monoforumPeerId,
 				_migrated,
@@ -332,12 +332,8 @@ object_ptr<Ui::RpWidget> InnerWidget::setupContent(
 		addTab(Storage::SharedMediaType::File);
 		addTab(Storage::SharedMediaType::Link);
 		addTab(Storage::SharedMediaType::MusicFile);
-		tabs.push_back(MakePollsTabDescriptor(SharedMediaCountValue(
-			tabsPeer,
-			topicRootId,
-			monoforumPeerId,
-			_migrated,
-			Storage::SharedMediaType::Poll) | rpl::map(_1 > 0)));
+		tabs.push_back(MakePollsTabDescriptor(
+			countValue(Storage::SharedMediaType::Poll) | rpl::map(_1 > 0)));
 		addTab(Storage::SharedMediaType::RoundVoiceFile);
 		addTab(Storage::SharedMediaType::GIF);
 		if (!_topic && !_sublist && !_savedMessages) {
@@ -507,7 +503,7 @@ void InnerWidget::saveState(not_null<Memento*> memento) {
 		memento->setMembersState(_members->saveState());
 	}
 	if (_tabsHost) {
-		memento->setActiveTab(_tabsHost->activeId());
+		memento->setTabsState(_tabsHost->saveState());
 	}
 }
 
@@ -519,9 +515,7 @@ void InnerWidget::restoreState(not_null<Memento*> memento) {
 		_sharedMediaWrap->finishAnimating();
 	}
 	if (_tabsHost) {
-		if (const auto active = memento->activeTab(); !active.isEmpty()) {
-			_tabsHost->restoreActiveTab(active);
-		}
+		_tabsHost->restoreState(memento->tabsState());
 	}
 }
 
