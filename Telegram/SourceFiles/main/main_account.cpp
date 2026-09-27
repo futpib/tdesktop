@@ -484,6 +484,9 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 	});
 	_mtp->setStateChangedHandler([=](MTP::ShiftedDcId dc, int32 state) {
 		if (dc == _mtp->mainDcId()) {
+			if (state == MTP::ConnectedState) {
+				Core::App().requestTdLibDifference(_mtp.get());
+			}
 			Core::App().settings().proxy().connectionTypeChangesNotify();
 			Core::App().checkProxyRotation(this, state);
 		}
@@ -491,6 +494,7 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 	_mtp->setSessionResetHandler([=](MTP::ShiftedDcId shiftedDcId) {
 		if (const auto session = maybeSession()) {
 			if (shiftedDcId == _mtp->mainDcId()) {
+				Core::App().requestTdLibDifference(_mtp.get());
 				session->updates().getDifference();
 			}
 		}
@@ -535,6 +539,7 @@ bool Account::checkForNewSession(const MTP::Response &message) {
 	if (!newSession.read(from, from + message.reply.size())) {
 		return false;
 	}
+	Core::App().requestTdLibDifference(_mtp.get());
 	_mtpNewSessionCreated.fire({});
 	return true;
 }

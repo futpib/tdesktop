@@ -2365,4 +2365,11 @@ void Application::pushTdLibUpdates(
 	}
 }
 
+void Application::requestTdLibDifference(
+		not_null<MTP::Instance*> instance) {
+	if (_tdlibBridge) {
+		_tdlibBridge->requestDifference(instance);
+	}
+}
+
 } // namespace Core

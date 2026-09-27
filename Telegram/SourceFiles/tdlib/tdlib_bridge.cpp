@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "tdlib/tdlib_bridge.h"
+#include "tdlib/tdlib_updates.h"
 
 #include "mtproto/mtp_instance.h"
 #include "mtproto/core_types.h"
@@ -293,6 +294,15 @@ void TdLibBridge::pushUpdates(
 			// Only plain bytes cross into TDLib; the parse and delivery to
 			// UpdatesManager happen on the client's scheduler thread.
 			td::push_external_updates(clientId, bytes);
+		}
+	}
+}
+
+void TdLibBridge::requestDifference(not_null<MTP::Instance*> instance) {
+	const auto lock = std::lock_guard(_d->mutex);
+	for (const auto &[clientId, state] : _d->clients) {
+		if (state.mtp == instance.get()) {
+			RequestDifference(clientId);
 		}
 	}
 }

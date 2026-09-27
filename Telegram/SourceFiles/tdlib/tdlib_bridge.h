@@ -35,6 +35,7 @@ public:
 	void pushUpdates(
 		not_null<MTP::Instance*> instance,
 		const QByteArray &serialized);
+	void requestDifference(not_null<MTP::Instance*> instance);
 
 	// Registers this bridge as the TDLib external dispatch handler.
 	void registerExternalDispatch();
