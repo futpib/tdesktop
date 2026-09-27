@@ -178,6 +178,7 @@ public:
 	void pushTdLibUpdates(
 		not_null<MTP::Instance*> instance,
 		const QByteArray &serialized);
+	void requestTdLibDifference(not_null<MTP::Instance*> instance);
 
 	// Windows interface.
 	bool hasActiveWindow(not_null<Main::Session*> session) const;

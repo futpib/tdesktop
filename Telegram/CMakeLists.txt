@@ -41,6 +41,15 @@ include(cmake/td_webauthn.cmake)
 include(cmake/telegram_apple_swift_runtime.cmake)
 include(cmake/generate_appstream_changelog.cmake)
 
+option(TDESKTOP_BUILD_TDLIB_TESTS "Build the TDLib recovery integration test." OFF)
+if (DESKTOP_APP_TEST_APPS OR TDESKTOP_BUILD_TDLIB_TESTS)
+    add_executable(test_tdlib_recovery ${src_loc}/tests/test_tdlib_recovery.cpp)
+    init_target(test_tdlib_recovery "(tests)")
+    target_include_directories(test_tdlib_recovery PRIVATE ${src_loc})
+    target_link_libraries(test_tdlib_recovery PRIVATE tdclient desktop-app::external_qt)
+    set_target_properties(test_tdlib_recovery PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+endif()
+
 if (DESKTOP_APP_TEST_APPS)
     include(cmake/tests.cmake)
 endif()
@@ -2207,6 +2216,7 @@ PRIVATE
     stdafx.h
     tdlib/tdlib_bridge.cpp
     tdlib/tdlib_bridge.h
+    tdlib/tdlib_updates.h
     tdlib/td_json_server.cpp
     tdlib/td_json_server.h
     tray_accounts_menu.h
@@ -2458,6 +2468,9 @@ set(td_include_dirs
     ${td_root}
     ${CMAKE_BINARY_DIR}/Telegram/ThirdParty/td/tdutils
 )
+if (DESKTOP_APP_TEST_APPS OR TDESKTOP_BUILD_TDLIB_TESTS)
+    target_include_directories(test_tdlib_recovery PRIVATE ${td_include_dirs})
+endif()
 list(TRANSFORM td_include_dirs PREPEND "-I")
 set_source_files_properties(
     ${src_loc}/tdlib/tdlib_bridge.cpp
