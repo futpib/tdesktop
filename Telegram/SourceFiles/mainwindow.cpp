@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/shadow.h"
 #include "ui/widgets/tooltip.h"
+#include "ui/effects/layer_backdrop.h"
 #include "ui/emoji_config.h"
 #include "ui/ui_utility.h"
 #include "lang/lang_cloud_manager.h"
@@ -117,7 +118,7 @@ void MainWindow::applyInitialWorkMode() {
 	workmodeUpdated(workMode);
 
 	if (controller().isPrimary()) {
-		if (Core::App().settings().windowPosition().maximized) {
+		if (positionMaximized()) {
 			DEBUG_LOG(("Window Pos: First show, setting maximized."));
 			setWindowState(Qt::WindowMaximized);
 		}
@@ -615,7 +616,9 @@ void MainWindow::checkActivation() {
 
 bool MainWindow::contentOverlapped(const QRect &globalRect) {
 	return (_main && _main->contentOverlapped(globalRect))
-		|| (_layer && _layer->contentOverlapped(globalRect));
+		|| (_layer
+			&& !Ui::CapturingUnderLayer()
+			&& _layer->contentOverlapped(globalRect));
 }
 
 void MainWindow::setInnerFocus() {
@@ -697,7 +700,7 @@ bool MainWindow::eventFilter(QObject *object, QEvent *e) {
 	case QEvent::Move:
 	case QEvent::Resize: {
 		if (object == this) {
-			positionUpdated();
+			positionUpdated(e->spontaneous());
 		}
 	} break;
 	}

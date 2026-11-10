@@ -71,6 +71,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_shared_media.h"
 #include "storage/storage_account.h"
 #include "support/support_helper.h"
+#include "tgw/tgw_storage.h"
 #include "ui/image/image.h"
 #include "ui/text/text_options.h"
 #include "ui/text/text_utilities.h"
@@ -755,6 +756,7 @@ void History::destroyMessage(not_null<HistoryItem*> item) {
 }
 
 void History::destroyMessagesByDates(TimeId minDate, TimeId maxDate) {
+	Tgw::ClearDatesStorage(this, minDate, maxDate);
 	auto toDestroy = std::vector<not_null<HistoryItem*>>();
 	toDestroy.reserve(_items.size());
 	for (const auto &message : _items) {
@@ -1053,10 +1055,6 @@ void History::clearUnreadReactionsFor(
 	}
 }
 
-int History::unreadPollVotesCount() const {
-	return _unreadPollVotesCount;
-}
-
 void History::setUnreadPollVotesCount(int count) {
 	if (_unreadPollVotesCount == count) {
 		return;
@@ -1064,11 +1062,6 @@ void History::setUnreadPollVotesCount(int count) {
 	const auto notifier = unreadStateChangeNotifier(
 		useMyUnreadInParent());
 	_unreadPollVotesCount = count;
-	_unreadPollVotesCountChanges.fire_copy(count);
-}
-
-rpl::producer<int> History::unreadPollVotesCountChanges() const {
-	return _unreadPollVotesCountChanges.events();
 }
 
 void History::clearUnreadPollVotesFor(MsgId topicRootId) {
@@ -1913,6 +1906,16 @@ void History::addOlderSlice(const QVector<MTPMessage> &slice) {
 		checkLocalMessages();
 		return;
 	}
+	if (const auto newest = maxMsgId()) {
+		// WHY: a stale latest-page answer can arrive after older messages
+		// were loaded; prepending it would break the order of blocks.
+		const auto older = [&](const MTPMessage &message) {
+			return IdFromMessage(message) <= newest;
+		};
+		if (ranges::none_of(slice, older)) {
+			return;
+		}
+	}
 
 	if (const auto added = createItems(slice); !added.empty()) {
 		addCreatedOlderSlice(added);
@@ -1991,8 +1994,8 @@ void History::checkLastMessage() {
 
 void History::addItemsToLists(
 		const std::vector<not_null<HistoryItem*>> &items) {
-	std::deque<not_null<UserData*>> *lastAuthors = nullptr;
-	base::flat_set<not_null<PeerData*>> *markupSenders = nullptr;
+	auto lastAuthors = (std::deque<not_null<UserData*>>*)nullptr;
+	auto markupSenders = (base::flat_set<not_null<PeerData*>>*)nullptr;
 	if (peer->isChat()) {
 		lastAuthors = &peer->asChat()->lastAuthors;
 		markupSenders = &peer->asChat()->markupSenders;
@@ -2766,10 +2769,6 @@ void History::destroyUnreadBar() {
 	if (const auto view = base::take(_unreadBarView)) {
 		view->destroyUnreadBar();
 	}
-}
-
-void History::unsetFirstUnreadMessage() {
-	_firstUnreadView = nullptr;
 }
 
 HistoryView::Element *History::unreadBar() const {
@@ -4301,15 +4300,6 @@ void History::removeJoinedMessage() {
 	}
 }
 
-void History::removeNewPeerMessages() {
-	if (_newPeerNameChange) {
-		_newPeerNameChange->destroy();
-	}
-	if (_newPeerPhotoChange) {
-		_newPeerPhotoChange->destroy();
-	}
-}
-
 void History::reactionsEnabledChanged(bool enabled) {
 	if (!enabled) {
 		for (const auto &item : _items) {
@@ -4516,6 +4506,7 @@ void History::clear(ClearType type, bool markEmpty) {
 }
 
 void History::clearUpTill(MsgId availableMinId) {
+	Tgw::ClearHistoryStorage(this, availableMinId);
 	auto remove = std::vector<not_null<HistoryItem*>>();
 	remove.reserve(_items.size());
 	for (const auto &item : _items) {
@@ -4523,6 +4514,7 @@ void History::clearUpTill(MsgId availableMinId) {
 		if (!item->isRegular()) {
 			continue;
 		} else if (itemId == availableMinId) {
+			Tgw::DeleteMessageStorage(item.get());
 			owner().scheduleItemPhotoCacheClear(item.get());
 			item->applyEditionToHistoryCleared();
 		} else if (itemId < availableMinId) {
@@ -4644,6 +4636,7 @@ void History::refreshHiddenLinksItems() {
 	for (const auto &id : refresh) {
 		if (const auto item = owner->message(id)) {
 			item->setHasHiddenLinks(false);
+			item->updateDependentServiceText();
 			owner->requestItemViewRefresh(item);
 		}
 	}
