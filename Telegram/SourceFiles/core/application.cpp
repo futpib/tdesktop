@@ -383,7 +383,10 @@ void Application::run() {
 	style::SetCustomFont(settings().customFontFamily());
 	style::internal::StartFonts();
 
-	Test::ApplyStartupOverrides();
+	if (!Test::ApplyStartupOverrides()) {
+		Quit();
+		return;
+	}
 
 	ValidateScale();
 
@@ -611,7 +614,8 @@ void Application::run() {
 }
 
 void Application::autoRegisterUrlScheme() {
-	if (!OptionSkipUrlSchemeRegister.value()) {
+	if (!OptionSkipUrlSchemeRegister.value()
+		&& Test::AllowAutomaticUrlRegistration()) {
 		InvokeQueued(this, [] { RegisterUrlScheme(); });
 	}
 }
