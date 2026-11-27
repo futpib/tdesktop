@@ -2508,7 +2508,20 @@ void ChatWidget::supportInsertText(const QString &text) {
 }
 
 void ChatWidget::supportShareContact(Support::Contact contact) {
-	supportInsertText(contact.comment);
+	const auto field = _composeControls->fieldForMention();
+	const auto undoOnClose = !contact.comment.isEmpty()
+		|| !field
+		|| field->textCursor().hasSelection();
+	if (contact.comment.isEmpty() || !field) {
+		supportInsertText(contact.comment);
+	} else {
+		field->setFocus();
+		auto cursor = field->textCursor();
+		cursor.beginEditBlock();
+		cursor.insertText(contact.comment);
+		cursor.endEditBlock();
+		field->ensureCursorVisible();
+	}
 	contact.comment = _composeControls->fieldLastText();
 
 	const auto submit = [=](Qt::KeyboardModifiers modifiers) {
@@ -2530,10 +2543,12 @@ void ChatWidget::supportShareContact(Support::Contact contact) {
 		_history,
 		contact,
 		crl::guard(this, submit)));
-	box->boxClosing(
-	) | rpl::on_next([=] {
-		_composeControls->undoFieldChange();
-	}, lifetime());
+	if (undoOnClose) {
+		box->boxClosing(
+		) | rpl::on_next([=] {
+			_composeControls->undoFieldChange();
+		}, lifetime());
+	}
 }
 
 void ChatWidget::sendRichDraft(
@@ -3986,8 +4001,9 @@ void ChatWidget::showAtPosition(
 	}
 	_lastShownAt = position.fullId;
 	controller()->setActiveChatEntry(activeChat());
-	const auto ignore = _repliesRootId
-		&& (position.fullId.msg == _repliesRootId);
+	const auto ignore = params.silentMissingMessage
+		|| (_repliesRootId
+			&& (position.fullId.msg == _repliesRootId));
 	_inner->showAtPosition(
 		position,
 		params,
@@ -4001,7 +4017,8 @@ void ChatWidget::updateAdaptiveLayout() {
 }
 
 Dialogs::RowDescriptor ChatWidget::activeChat() const {
-	const auto messageId = _lastShownAt
+	// Min, Max and Unread positions have no peer and name no message.
+	const auto messageId = _lastShownAt.peer
 		? _lastShownAt
 		: FullMsgId(_peer->id, ShowAtUnreadMsgId);
 	if (_sublist) {
@@ -4513,6 +4530,7 @@ void ChatWidget::restoreState(not_null<ChatMemento*> memento) {
 			Window::SectionShow::Way::Forward,
 			anim::type::instant);
 		params.highlight = memento->highlight();
+		params.silentMissingMessage = memento->silentMissingMessage();
 		showAtPosition(Data::MessagePosition{
 			.fullId = ResolveHighlightId(_history, highlight),
 			.date = TimeId(0),
