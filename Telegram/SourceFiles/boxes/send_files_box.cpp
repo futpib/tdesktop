@@ -943,6 +943,13 @@ void SendFilesBox::prepare() {
 		}
 	}, lifetime());
 
+	Core::App().passcodeLockChanges(
+	) | rpl::filter([=](bool locked) {
+		return locked && !_confirmed && !_stashed && !_textTaken;
+	}) | rpl::on_next([=] {
+		stash();
+	}, lifetime());
+
 	Shortcuts::Requests(
 	) | rpl::filter([=] {
 		return _stashCallback
