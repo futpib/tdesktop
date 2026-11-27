@@ -24,6 +24,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/image/image_prepare.h"
 #include "window/window_controller.h"
 
+#include <QtCore/QFileInfo>
+
 namespace Editor {
 namespace {
 
@@ -233,6 +235,15 @@ void OpenWithPreparedVideoFile(
 	}
 	const auto path = file->path;
 	const auto content = file->content;
+	const auto sourceSize = path.isEmpty()
+		? qint64(content.size())
+		: (QFileInfo::exists(path) ? QFileInfo(path).size() : qint64(0));
+	if (sourceSize <= 0) {
+		show->showBox(Ui::MakeInformBox(
+			tr::lng_send_image_empty(tr::now, lt_name, path)));
+		doneCallback(false);
+		return;
+	}
 	// Anything the server would not take as a video is re-encoded anyway.
 	const auto transcodeAlways = !Core::IsMimeSentAsVideo(
 		file->information->filemime)
